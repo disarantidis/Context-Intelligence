@@ -57,6 +57,8 @@ export interface Issue {
   tokenDimensions?: Record<string, number>;
   /** Source value preview for this context point (e.g. effect params, text style font/size, variable value) */
   sourceValue?: string;
+  /** Resolved hex for COLOR / PAINT issues when available */
+  colorHex?: string;
   /** When variable/style name matches a baked Context Rule, the rule's meaning */
   bakedRuleMeaning?: string;
 }
@@ -132,6 +134,12 @@ export interface ComponentAudit {
   issues: Issue[];
   properties: Array<{ name: string; type: string }>;
   variants: VariantInfo[];
+  /** The component's actual description text (empty string if none) */
+  description?: string;
+  /** External documentation URLs from Figma's documentationLinks */
+  documentationLinks?: string[];
+  /** Per-variant-component descriptions (individual COMPONENT children of a COMPONENT_SET) */
+  variantDescriptions?: Array<{ name: string; description: string }>;
 }
 
 /** Summary of a batch audit (scoring-calculator) */

@@ -217,13 +217,16 @@ export class ComponentAnalyzer {
         hasDocumentation: false,
         hasDocumentationLink: hasDocLink,
         properNaming: properNaming.isValid,
-        hasLayerNames: true, // Skip expensive recursive check for sets
+        hasLayerNames: true,
         hasPropertyDescriptions: hasPropDescs,
         hasVariantDescriptions: hasVariantDescs
       },
       issues,
       properties,
-      variants
+      variants,
+      description: hasDescription.description,
+      documentationLinks: this.getDocumentationLinks(node),
+      variantDescriptions: this.collectVariantDescriptions(node),
     };
   }
 
@@ -273,6 +276,7 @@ export class ComponentAnalyzer {
     const properties = this.extractProperties(node);
     const variants = this.extractVariants(node);
 
+    const descCheck = this.checkDescription(node);
     return {
       nodeId: node.id,
       nodeName: node.name,
@@ -281,7 +285,10 @@ export class ComponentAnalyzer {
       checks,
       issues,
       properties,
-      variants
+      variants,
+      description: descCheck.description,
+      documentationLinks: this.getDocumentationLinks(node),
+      variantDescriptions: this.collectVariantDescriptions(node),
     };
   }
 
@@ -505,7 +512,10 @@ export class ComponentAnalyzer {
       },
       issues,
       properties,
-      variants
+      variants,
+      description: hasDescription.description,
+      documentationLinks: this.getDocumentationLinks(node),
+      variantDescriptions: this.collectVariantDescriptions(node),
     };
   }
 
@@ -665,6 +675,29 @@ export class ComponentAnalyzer {
     }
 
     return false;
+  }
+
+  /** Collect all documentation link URIs from the node */
+  private getDocumentationLinks(node: SceneNode): string[] {
+    if ('documentationLinks' in node) {
+      const links = (node as any).documentationLinks as Array<{ uri: string }> | undefined;
+      return links ? links.map(l => l.uri).filter(Boolean) : [];
+    }
+    return [];
+  }
+
+  /** Collect per-variant-component descriptions (individual COMPONENTs inside a COMPONENT_SET) */
+  private collectVariantDescriptions(node: SceneNode): Array<{ name: string; description: string }> {
+    if (node.type !== 'COMPONENT_SET' || !('children' in node)) return [];
+    const result: Array<{ name: string; description: string }> = [];
+    for (const child of node.children) {
+      if (child.type !== 'COMPONENT') continue;
+      const desc = ('description' in child) ? ((child as any).description as string) : '';
+      if (desc && desc.trim()) {
+        result.push({ name: child.name, description: desc.trim() });
+      }
+    }
+    return result;
   }
 
   /**

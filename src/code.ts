@@ -49,6 +49,21 @@ import type { ScanPayload, DescriptionCandidate } from './usage-types';
 // Default rules: bundled sample-rules.json (used when clientStorage is empty or invalid)
 import defaultRulesConfig from './sample-rules.json';
 
+// ── Progressive Learning Layer ───────────────────────────────────────────────
+import { StorageAdapter } from './learning/StorageAdapter';
+import { KnowledgeBase } from './learning/KnowledgeBase';
+import { PatternExtractor } from './learning/PatternExtractor';
+import { RuleDeriver } from './learning/RuleDeriver';
+import { ScoreAggregator } from './learning/ScoreAggregator';
+import { LearningEngine } from './learning/LearningEngine';
+import { ContextBuilder } from './learning/ContextBuilder';
+import { AIAnalysisModule } from './learning/AIAnalysisModule';
+import { FeedbackProcessor } from './learning/FeedbackProcessor';
+import { SyncAdapter, DEFAULT_GITHUB_PATHS } from './learning/SyncAdapter';
+import type { SyncConfig } from './learning/SyncAdapter';
+import { DSKnowledgeSeeder } from './learning/DSKnowledgeSeeder';
+import type { MCPKnowledgeResult } from './learning/types';
+
 // ============================================================================
 // Plugin Initialization
 // ============================================================================
@@ -74,6 +89,20 @@ let fixApplier: FixApplier | null = null;
 const contextEvaluator = new ContextEvaluator();
 const maturityEngine = new MaturityEngine();
 let scanCancelled = false;
+
+// ── Progressive Learning Layer — module initialization ───────────────────
+const learningStorage = new StorageAdapter();
+const knowledgeBase = new KnowledgeBase(learningStorage);
+const learningEngine = new LearningEngine(
+  new PatternExtractor(),
+  new RuleDeriver(),
+  new ScoreAggregator(),
+  knowledgeBase
+);
+const contextBuilder = new ContextBuilder(knowledgeBase);
+const aiAnalysisModule = new AIAnalysisModule(contextBuilder);
+const feedbackProcessor = new FeedbackProcessor(knowledgeBase);
+const dsKnowledgeSeeder = new DSKnowledgeSeeder();
 
 // ── MCP Integration State ────────────────────────────────────────────────
 let mcpConnected = false;
@@ -1807,6 +1836,22 @@ figma.ui.onmessage = async (msg) => {
     }
   }
 
+  else if (msg.type === 'APPLY_COMP_CONTEXT') {
+    const m = msg as any;
+    try {
+      const node = await figma.getNodeByIdAsync(m.nodeId);
+      if (!node) throw new Error('Node not found: ' + m.nodeId);
+      if (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET') throw new Error('Node must be COMPONENT or COMPONENT_SET');
+      if (m.description !== undefined && 'description' in node) (node as any).description = m.description;
+      if (m.documentationLink !== undefined && 'documentationLinks' in node) {
+        (node as any).documentationLinks = m.documentationLink ? [{ uri: m.documentationLink }] : [];
+      }
+      figma.ui.postMessage({ type: 'APPLY_COMP_CONTEXT_RESULT', success: true });
+    } catch (e: unknown) {
+      figma.ui.postMessage({ type: 'APPLY_COMP_CONTEXT_RESULT', success: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   else if (msg.type === 'ADD_COMPONENT_PROPERTY') {
     const m = msg as any;
     try {
@@ -3071,21 +3116,45 @@ function rgbaToHex(color: { r: number; g: number; b: number; a?: number }): stri
 }
 
 /**
- * Try to extract the first-mode color hex from a COLOR variable.
+ * Resolve a COLOR variable to a hex value.
+ * Follows alias chains so extension/alias tokens can still preview color.
  */
-function getVariableColorHex(variable: Variable): string | undefined {
+async function getVariableColorHex(
+  variable: Variable,
+  cache?: Map<string, string | undefined>,
+  visited?: Set<string>
+): Promise<string | undefined> {
   if (variable.resolvedType !== 'COLOR') return undefined;
+  const id = variable.id;
+  if (cache && cache.has(id)) return cache.get(id);
+
+  const seen = visited || new Set<string>();
+  if (seen.has(id)) return undefined;
+  seen.add(id);
+
   try {
-    const modeIds = Object.keys(variable.valuesByMode);
+    const modeIds = Object.keys(variable.valuesByMode || {});
     if (modeIds.length === 0) return undefined;
     const value = variable.valuesByMode[modeIds[0]];
-    // value is an RGBA object { r, g, b, a } for COLOR type (unless it's an alias)
     if (value && typeof value === 'object' && 'r' in value && 'g' in value && 'b' in value) {
-      return rgbaToHex(value as { r: number; g: number; b: number });
+      const hex = rgbaToHex(value as { r: number; g: number; b: number });
+      if (cache) cache.set(id, hex);
+      return hex;
+    }
+    if (isVariableAliasValue(value)) {
+      const targetId = (value as { id?: string }).id;
+      if (!targetId) return undefined;
+      if (cache && cache.has(targetId)) return cache.get(targetId);
+      const targetVar = await figma.variables.getVariableByIdAsync(targetId);
+      if (!targetVar) return undefined;
+      const resolved = await getVariableColorHex(targetVar, cache, seen);
+      if (cache) cache.set(id, resolved);
+      return resolved;
     }
   } catch (_) {
     // ignore
   }
+  if (cache) cache.set(id, undefined);
   return undefined;
 }
 
@@ -3195,6 +3264,143 @@ function getVariableSourceValue(variable: Variable): string {
   return String(raw);
 }
 
+/**
+ * Extension tokens/styles often inherit documentation from a master segment.
+ * In those cases, missing-description findings are not actionable.
+ */
+function hasExtensionKeyword(name: string): boolean {
+  const n = (name || '').toLowerCase();
+  if (!n) return false;
+  return (
+    n.includes('/extension/') ||
+    n.includes('/extensions/') ||
+    n.includes('/extended/') ||
+    n.includes('/extented/') || // keep common misspelling
+    n.startsWith('extension/') ||
+    n.startsWith('extended/') ||
+    n.startsWith('extented/') ||
+    n.includes(' extension ') ||
+    n.includes(' extended ') ||
+    n.includes(' extented ')
+  );
+}
+
+function isVariableAliasValue(raw: unknown): boolean {
+  return !!raw && typeof raw === 'object' && (raw as { type?: string }).type === 'VARIABLE_ALIAS';
+}
+
+function isMasterLinkedVariable(variable: Variable, collectionName: string): boolean {
+  if (hasExtensionKeyword(variable.name) || hasExtensionKeyword(collectionName)) return true;
+  const modeIds = Object.keys(variable.valuesByMode || {});
+  if (modeIds.length === 0) return false;
+  let aliasCount = 0;
+  for (const modeId of modeIds) {
+    if (isVariableAliasValue(variable.valuesByMode[modeId])) aliasCount++;
+  }
+  return aliasCount > 0 && aliasCount === modeIds.length;
+}
+
+function hasOwnOrSharedVariableDescription(variable: Variable, collectionName: string): boolean {
+  const hasOwn = !!(variable.description && variable.description.trim().length > 0);
+  return hasOwn || isMasterLinkedVariable(variable, collectionName);
+}
+
+function hasOwnOrSharedStyleDescription(style: BaseStyle, groupName: string): boolean {
+  const hasOwn = !!(style.description && style.description.trim().length > 0);
+  return hasOwn || hasExtensionKeyword(style.name) || hasExtensionKeyword(groupName);
+}
+
+/**
+ * Detect child/extended collections that should not surface independent issues.
+ * We still scan them, but suppress their issues at the end of the collection pass.
+ */
+function isChildCollectionForIssueSuppression(collectionName: string, _variables: Variable[]): boolean {
+  const lower = (collectionName || '').toLowerCase();
+  if (
+    hasExtensionKeyword(collectionName) ||
+    lower.includes('child') ||
+    lower.includes('/child/') ||
+    lower.startsWith('child/')
+  ) {
+    return true;
+  }
+  // IMPORTANT: do not suppress by alias heuristics;
+  // only suppress explicit child/extended collections.
+  return false;
+}
+
+function isCoreSemanticCollectionName(collectionName: string): boolean {
+  const n = (collectionName || '').toLowerCase();
+  return (
+    n.includes('semantic') ||
+    n.includes('foundation') ||
+    n.includes('primitive') ||
+    n.includes('primitives') ||
+    n.includes('core') ||
+    n.includes('base') ||
+    n.includes('global') ||
+    n.includes('theme')
+  );
+}
+
+/**
+ * Returns alias target variable id when ALL modes are alias-linked to the same target.
+ * Otherwise returns null.
+ */
+function getUniformAliasTargetId(variable: Variable): string | null {
+  const modeIds = Object.keys(variable.valuesByMode || {});
+  if (modeIds.length === 0) return null;
+  let aliasId: string | null = null;
+  for (const modeId of modeIds) {
+    const raw = variable.valuesByMode[modeId];
+    if (!isVariableAliasValue(raw)) return null;
+    const id = (raw as { id?: string }).id || null;
+    if (!id) return null;
+    if (aliasId === null) aliasId = id;
+    else if (aliasId !== id) return null;
+  }
+  return aliasId;
+}
+
+/**
+ * Secondary detector for child/extended collections:
+ * if most variables are pure aliases to variables from another collection,
+ * this collection behaves like an extension and should not emit independent issues.
+ */
+async function isLikelyChildCollectionByAliasInheritance(
+  collection: VariableCollection,
+  variables: Variable[]
+): Promise<boolean> {
+  if (isCoreSemanticCollectionName(collection.name)) return false;
+  if (!variables || variables.length < 3) return false;
+
+  const targetCache = new Map<string, Variable | null>();
+  let aliasOnlyCount = 0;
+  let aliasToExternalCollectionCount = 0;
+
+  for (const v of variables) {
+    const targetId = getUniformAliasTargetId(v);
+    if (!targetId) continue;
+    aliasOnlyCount++;
+
+    if (!targetCache.has(targetId)) {
+      const targetVar = await figma.variables.getVariableByIdAsync(targetId);
+      targetCache.set(targetId, targetVar || null);
+    }
+
+    const target = targetCache.get(targetId);
+    if (target && target.variableCollectionId && target.variableCollectionId !== collection.id) {
+      aliasToExternalCollectionCount++;
+    }
+  }
+
+  if (aliasOnlyCount === 0) return false;
+  const aliasOnlyRatio = aliasOnlyCount / variables.length;
+  const externalAliasRatio = aliasToExternalCollectionCount / variables.length;
+
+  return aliasOnlyCount >= 3 && aliasOnlyRatio >= 0.7 && externalAliasRatio >= 0.6;
+}
+
 function targetToConfig(target: 'components' | 'variables' | 'styles'): ScanConfig {
   switch (target) {
     case 'components':
@@ -3270,6 +3476,7 @@ async function scanDocumentVariables(): Promise<void> {
 
   try {
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    const colorHexCache = new Map<string, string | undefined>();
 
     if (collections.length === 0) {
       figma.ui.postMessage({
@@ -3325,7 +3532,7 @@ async function scanDocumentVariables(): Promise<void> {
       if (notionEnrichedRules.length > 0 && mcpConnected) {
         try {
           const complianceEntities = variables
-            .filter(v => !v.description || v.description.trim().length === 0)
+            .filter(v => !hasOwnOrSharedVariableDescription(v, collection.name))
             .map(v => ({ name: v.name, entityType: 'variable', description: v.description || '' }));
           if (complianceEntities.length > 0) {
             notionCompliance = await requestNotionCompliance(complianceEntities);
@@ -3344,7 +3551,7 @@ async function scanDocumentVariables(): Promise<void> {
         if (vi % 10 === 0) await yieldToEventLoop(); // yield every 10 items
         if (scanCancelled) break;
         const variable = variables[vi];
-        const colorHex = getVariableColorHex(variable);
+        const colorHex = await getVariableColorHex(variable, colorHexCache);
 
         // ── Cache for DS Context Maturity ──
         allDSVars.push({
@@ -3369,13 +3576,14 @@ async function scanDocumentVariables(): Promise<void> {
         };
 
         // ── DS Naming & Structure Validation (runs on ALL variables) ──
+        const tokenHasDescription = hasOwnOrSharedVariableDescription(variable, collection.name);
         const tokenInput: TokenInput = {
           name: variable.name,
           collectionName: collection.name,
           resolvedType: variable.resolvedType,
           modeCount: Object.keys(variable.valuesByMode).length,
           modeNames: collectionModeNames,
-          hasDescription: !!(variable.description && variable.description.trim().length > 0),
+          hasDescription: tokenHasDescription,
         };
         const namingViolations = validateToken(tokenInput);
         const tierLabel = getTokenTierLabel(collection.name);
@@ -3383,7 +3591,7 @@ async function scanDocumentVariables(): Promise<void> {
         const variableSourceValue = getVariableSourceValue(variable);
         const variableScopes = (variable as any).scopes || [];
         for (const v of namingViolations) {
-          issues.push({
+          const issueObj: any = {
             id: `${variable.id}-${v.ruleId}`,
             category: 'poor' as any,
             severity: v.severity,
@@ -3402,11 +3610,13 @@ async function scanDocumentVariables(): Promise<void> {
             tokenScopes: variableScopes,
             collectionName: collection.name,
             ...tokenMaturityAttach,
-          } as Issue);
+          };
+          if (colorHex) issueObj.colorHex = colorHex;
+          issues.push(issueObj as Issue);
         }
 
         // ── Missing Description (existing logic) ──────────────────────
-        const hasDescription = variable.description && variable.description.trim().length > 0;
+        const hasDescription = hasOwnOrSharedVariableDescription(variable, collection.name);
         if (!hasDescription) {
           // === Context Maturity & Auto-Description Engine ===
           const signals = signalsFromVariable(variable, collection.name, colorHex);
@@ -3473,7 +3683,12 @@ async function scanDocumentVariables(): Promise<void> {
         }
       }
 
-      const score = variables.length === 0 ? 100 : Math.max(0, 100 - issues.length * 15);
+      let suppressChildCollectionIssues = isChildCollectionForIssueSuppression(collection.name, variables);
+      if (!suppressChildCollectionIssues) {
+        suppressChildCollectionIssues = await isLikelyChildCollectionByAliasInheritance(collection, variables);
+      }
+      const finalIssues = suppressChildCollectionIssues ? [] : issues;
+      const score = variables.length === 0 ? 100 : Math.max(0, 100 - finalIssues.length * 15);
       audits.push({
         nodeId: collection.id,
         nodeName: collection.name,
@@ -3490,7 +3705,7 @@ async function scanDocumentVariables(): Promise<void> {
           hasPropertyDescriptions: false,
           hasVariantDescriptions: false
         },
-        issues,
+        issues: finalIssues,
         properties: [],
         variants: []
       });
@@ -3594,7 +3809,7 @@ async function scanDocumentStyles(): Promise<void> {
       if (notionEnrichedRules.length > 0 && mcpConnected) {
         try {
           const complianceEntities = group.styles
-            .filter(s => !s.description || s.description.trim().length === 0)
+            .filter(s => !hasOwnOrSharedStyleDescription(s, group.name))
             .map(s => ({ name: s.name, entityType: 'style', description: s.description || '' }));
           if (complianceEntities.length > 0) {
             notionStyleCompliance = await requestNotionCompliance(complianceEntities);
@@ -3608,10 +3823,11 @@ async function scanDocumentStyles(): Promise<void> {
         const style = group.styles[si];
 
         // ── DS Naming & Structure Validation (runs on ALL styles) ─────
+        const styleHasDescription = hasOwnOrSharedStyleDescription(style, group.name);
         const styleValidInput: StyleInput = {
           name: style.name,
           styleType: style.type,
-          hasDescription: !!(style.description && style.description.trim().length > 0),
+          hasDescription: styleHasDescription,
         };
         const styleNamingViolations = validateStyle(styleValidInput);
 
@@ -3619,8 +3835,9 @@ async function scanDocumentStyles(): Promise<void> {
         if (style.type === 'PAINT') styleSourceValue = getPaintStyleSourceValue(style as PaintStyle);
         else if (style.type === 'EFFECT') styleSourceValue = getEffectStyleSourceValue(style as EffectStyle);
         else if (style.type === 'TEXT') styleSourceValue = getTextStyleSourceValue(style as TextStyle);
+        const styleColorHex = style.type === 'PAINT' ? getPaintStyleColorHex(style as PaintStyle) : undefined;
         for (const v of styleNamingViolations) {
-          issues.push({
+          const issueObj: any = {
             id: `${style.id}-${v.ruleId}`,
             category: 'poor' as any,
             severity: v.severity,
@@ -3635,11 +3852,13 @@ async function scanDocumentStyles(): Promise<void> {
             resolvedType: style.type,
             ruleId: v.ruleId,
             sourceValue: styleSourceValue || undefined,
-          } as Issue);
+          };
+          if (styleColorHex) issueObj.colorHex = styleColorHex;
+          issues.push(issueObj as Issue);
         }
 
         // ── Missing Description (existing logic) ──────────────────────
-        const hasDescription = style.description && style.description.trim().length > 0;
+        const hasDescription = hasOwnOrSharedStyleDescription(style, group.name);
         if (!hasDescription) {
           let colorHex: string | undefined;
           if (style.type === 'PAINT') {
@@ -3776,6 +3995,102 @@ async function scanDocumentStyles(): Promise<void> {
 }
 
 // ============================================================================
+// Component Token Usage — automatic collection & persistence during scan
+// ============================================================================
+
+const COMP_TOKENS_STORAGE_PREFIX = 'ds_comp_tokens_v1_';
+const COMP_TOKENS_MAX_DEPTH = 8;
+const COMP_TOKENS_MAX_NODES = 300;
+
+interface TokenUsageEntry {
+  tokenName: string;
+  collection: string;
+  resolvedType: string;
+  property: string;     // raw Figma property key (e.g. "fills")
+  cssProperty: string;  // mapped CSS property (e.g. "fill")
+  layer: string;        // node name where the binding lives
+  layerRole: string;    // inferred semantic role
+}
+
+interface ComponentTokenUsage {
+  componentId: string;
+  componentName: string;
+  scannedAt: string;
+  /** Keys are variant names (e.g. "Size=Large, State=Default") or "Default" for plain components */
+  variants: Record<string, TokenUsageEntry[]>;
+}
+
+function _traverseNodeForTokens(
+  node: SceneNode,
+  varMap: Map<string, Variable>,
+  collMap: Map<string, VariableCollection>,
+  results: TokenUsageEntry[],
+  depth: number,
+  counter: { n: number },
+): void {
+  if (depth > COMP_TOKENS_MAX_DEPTH || counter.n >= COMP_TOKENS_MAX_NODES) return;
+  counter.n++;
+
+  const boundVars = (node as any).boundVariables as Record<string, unknown> | undefined;
+  if (boundVars) {
+    for (const [prop, binding] of Object.entries(boundVars)) {
+      const bindings: unknown[] = Array.isArray(binding) ? binding : [binding];
+      for (const b of bindings) {
+        if (!b || (b as any).type !== 'VARIABLE_ALIAS') continue;
+        const variable = varMap.get((b as any).id);
+        if (!variable) continue;
+        const collection = collMap.get(variable.variableCollectionId);
+        results.push({
+          tokenName: variable.name,
+          collection: collection?.name ?? '',
+          resolvedType: variable.resolvedType,
+          property: prop,
+          cssProperty: propToCssProperty(prop),
+          layer: node.name,
+          layerRole: inferLayerRole(node.name),
+        });
+      }
+    }
+  }
+
+  if ('children' in node) {
+    for (const child of (node as ChildrenMixin).children) {
+      if (counter.n >= COMP_TOKENS_MAX_NODES) break;
+      _traverseNodeForTokens(child as SceneNode, varMap, collMap, results, depth + 1, counter);
+    }
+  }
+}
+
+async function collectAndSaveComponentTokens(
+  node: ComponentNode | ComponentSetNode,
+  varMap: Map<string, Variable>,
+  collMap: Map<string, VariableCollection>,
+): Promise<void> {
+  const usage: ComponentTokenUsage = {
+    componentId: node.id,
+    componentName: node.name,
+    scannedAt: new Date().toISOString(),
+    variants: {},
+  };
+
+  if (node.type === 'COMPONENT_SET') {
+    for (const child of node.children) {
+      if (child.type !== 'COMPONENT') continue;
+      const entries: TokenUsageEntry[] = [];
+      _traverseNodeForTokens(child as SceneNode, varMap, collMap, entries, 0, { n: 0 });
+      usage.variants[child.name] = entries;
+    }
+  } else {
+    // Plain COMPONENT — single "Default" variant
+    const entries: TokenUsageEntry[] = [];
+    _traverseNodeForTokens(node as SceneNode, varMap, collMap, entries, 0, { n: 0 });
+    usage.variants['Default'] = entries;
+  }
+
+  await figma.clientStorage.setAsync(COMP_TOKENS_STORAGE_PREFIX + node.id, usage);
+}
+
+// ============================================================================
 // Scan Function (Components - requires selection)
 // ============================================================================
 
@@ -3815,6 +4130,16 @@ async function scanSelection(config: ScanConfig) {
   let timedOut = false;
 
  try {
+  // Fetch variable maps once — used for silent token-usage collection per component
+  const [_tokVars, _tokColls] = await Promise.all([
+    figma.variables.getLocalVariablesAsync(),
+    figma.variables.getLocalVariableCollectionsAsync(),
+  ]);
+  const _tokVarMap = new Map<string, Variable>();
+  _tokVars.forEach(v => _tokVarMap.set(v.id, v));
+  const _tokCollMap = new Map<string, VariableCollection>();
+  _tokColls.forEach(c => _tokCollMap.set(c.id, c));
+
   // Component / structure scan (when scanStructure or scanStyles is enabled)
   const runComponentScan = config.scanStructure || config.scanStyles;
   
@@ -3838,6 +4163,9 @@ async function scanSelection(config: ScanConfig) {
       if (audit) {
         audits.push(audit);
         console.log(`  → Found ${audit.issues.length} issues`);
+        // Silently collect & persist token usage — fire and forget
+        collectAndSaveComponentTokens(node as ComponentNode | ComponentSetNode, _tokVarMap, _tokCollMap)
+          .catch(() => { /* non-blocking */ });
       } else {
         console.log(`  → ⏱ Timed out analyzing ${node.name}, skipping`);
         figma.ui.postMessage({ type: 'SCAN_PROGRESS', message: `Skipped ${node.name} (too complex)` });
@@ -3862,6 +4190,9 @@ async function scanSelection(config: ScanConfig) {
         if (audit) {
           audits.push(audit);
           console.log(`      → ${audit.issues.length} issues`);
+          // Silently collect & persist token usage — fire and forget
+          collectAndSaveComponentTokens(comp, _tokVarMap, _tokCollMap)
+            .catch(() => { /* non-blocking */ });
         } else {
           console.log(`      → ⏱ Timed out, skipping ${comp.name}`);
         }
@@ -4270,5 +4601,266 @@ function extractAINodeMeta(node: SceneNode, depth: number): Record<string, unkno
 //     scanSelection();
 //   }
 // });
+
+// ============================================================================
+// Learning Layer Message Handlers
+// ============================================================================
+
+// Appended to the existing figma.ui.onmessage handler via a secondary listener.
+// These handlers are additive — they do not replace the primary handler above.
+figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => {
+  // ── PROCESS_SCAN_LEARNING ──────────────────────────────────────────────────
+  if (msg.type === 'PROCESS_SCAN_LEARNING') {
+    try {
+      await learningEngine.processScanResult(msg.scanResult as Parameters<typeof learningEngine.processScanResult>[0]);
+      figma.ui.postMessage({ type: 'LEARNING_COMPLETE' });
+    } catch (err) {
+      console.error('[Learning] processScanResult failed:', err);
+      figma.ui.postMessage({ type: 'LEARNING_ERROR', error: String(err) });
+    }
+    return;
+  }
+
+  // ── RUN_AI_ANALYSIS ───────────────────────────────────────────────────────
+  if (msg.type === 'RUN_AI_ANALYSIS') {
+    try {
+      const result = await aiAnalysisModule.analyze({
+        apiKey: String(msg.apiKey ?? ''),
+        analysisPrompt: String(
+          msg.prompt ??
+            'Analyze this design system scan and identify patterns, anomalies, and recommendations.'
+        ),
+        scanSummary: JSON.stringify(msg.scanSummary),
+      });
+      await knowledgeBase.addInsights(result.insights);
+      figma.ui.postMessage({ type: 'AI_ANALYSIS_COMPLETE', insights: result.insights });
+    } catch (err) {
+      console.error('[Learning] AI analysis failed:', err);
+      figma.ui.postMessage({ type: 'AI_ANALYSIS_ERROR', error: String(err) });
+    }
+    return;
+  }
+
+  // ── GET_KB_SUMMARY ────────────────────────────────────────────────────────
+  if (msg.type === 'GET_KB_SUMMARY') {
+    const data = await knowledgeBase.load();
+    figma.ui.postMessage({
+      type: 'KB_SUMMARY',
+      summary: {
+        patternCount: data.patterns.length,
+        ruleCount: data.rules.length,
+        scoreHistoryCount: data.scoreHistory.length,
+        insightCount: data.aiInsights.length,
+        updatedAt: data.updatedAt,
+      },
+    });
+    return;
+  }
+
+  // ── EXPORT_KB ─────────────────────────────────────────────────────────────
+  if (msg.type === 'EXPORT_KB') {
+    const json = await knowledgeBase.export();
+    figma.ui.postMessage({ type: 'KB_EXPORT', json });
+    return;
+  }
+
+  // ── CONFIRM_RULE ──────────────────────────────────────────────────────────
+  if (msg.type === 'CONFIRM_RULE') {
+    const rules = await knowledgeBase.getRules();
+    const rule = rules.find(r => r.id === String(msg.ruleId));
+    if (rule) {
+      rule.confirmedByUser = true;
+      if (msg.meaning) rule.meaning = String(msg.meaning);
+      await knowledgeBase.mergeRules(rules);
+    }
+    figma.ui.postMessage({ type: 'RULE_CONFIRMED', ruleId: msg.ruleId });
+    return;
+  }
+
+  // ── RECORD_DESCRIPTION_FEEDBACK ───────────────────────────────────────────
+  if (msg.type === 'RECORD_DESCRIPTION_FEEDBACK') {
+    await feedbackProcessor.recordDescriptionFeedback(
+      String(msg.componentId ?? ''),
+      String(msg.componentName ?? ''),
+      String(msg.description ?? ''),
+      (msg.quality as 'excellent' | 'good' | 'poor' | 'unrated') ?? 'unrated',
+      (msg.generatedBy as 'ai' | 'manual') ?? 'manual'
+    );
+    figma.ui.postMessage({ type: 'DESCRIPTION_FEEDBACK_RECORDED' });
+    return;
+  }
+
+  // ── CLEAR_KB ──────────────────────────────────────────────────────────────
+  if (msg.type === 'CLEAR_KB') {
+    await knowledgeBase.clear();
+    figma.ui.postMessage({ type: 'KB_CLEARED' });
+    return;
+  }
+
+  // ── GET_RULES (for the dedicated Rules panel) ─────────────────────────────
+  if (msg.type === 'GET_RULES') {
+    const rules = await knowledgeBase.getRules();
+    figma.ui.postMessage({ type: 'RULES_DATA', rules });
+    return;
+  }
+
+  // ── SYNC_TO_NOTION ────────────────────────────────────────────────────────
+  if (msg.type === 'SYNC_TO_NOTION') {
+    try {
+      const syncConfig: SyncConfig = { notion: msg.notionConfig as SyncConfig['notion'] };
+      const adapter = new SyncAdapter(syncConfig);
+      const insights = await knowledgeBase.getInsights();
+      const result = await adapter.pushInsightsToNotion(insights);
+      // If the DB was just created, persist the new databaseId
+      if (result.databaseId && syncConfig.notion) {
+        syncConfig.notion.databaseId = result.databaseId;
+        const raw = await figma.clientStorage.getAsync('dsci_sync_config');
+        const saved = raw ? (JSON.parse(raw as string) as SyncConfig) : {};
+        saved.notion = syncConfig.notion;
+        await figma.clientStorage.setAsync('dsci_sync_config', JSON.stringify(saved));
+      }
+      figma.ui.postMessage({
+        type: 'SYNC_TO_NOTION_COMPLETE',
+        databaseId: result.databaseId,
+        created: result.created,
+        errors: result.errors,
+      });
+    } catch (err) {
+      console.error('[Learning] Notion sync failed:', err);
+      figma.ui.postMessage({ type: 'SYNC_TO_NOTION_ERROR', error: String(err) });
+    }
+    return;
+  }
+
+  // ── SYNC_TO_GITHUB ────────────────────────────────────────────────────────
+  // msg.githubConfig  — SyncConfig['github'] (token, owner, repo, branch, paths)
+  // msg.foundationsRawJson — optional: raw Figma token export JSON string
+  //                          (pass null / omit to skip the foundationsJson path)
+  if (msg.type === 'SYNC_TO_GITHUB') {
+    try {
+      const syncConfig: SyncConfig = { github: msg.githubConfig as SyncConfig['github'] };
+      const adapter = new SyncAdapter(syncConfig);
+
+      const [componentsJson, foundationsJson] = await Promise.all([
+        knowledgeBase.exportSlice('component'),
+        knowledgeBase.exportSlice('foundation'),
+      ]);
+
+      const foundationsRawJson =
+        typeof msg.foundationsRawJson === 'string' ? msg.foundationsRawJson : null;
+
+      const result = await adapter.pushSplitToGitHub(
+        componentsJson,
+        foundationsJson,
+        foundationsRawJson
+      );
+
+      figma.ui.postMessage({
+        type: 'SYNC_TO_GITHUB_COMPLETE',
+        results: {
+          components: result.components.success,
+          foundations: result.foundations.success,
+          foundationsJson: result.foundationsJson.success,
+        },
+      });
+    } catch (err) {
+      console.error('[Learning] GitHub sync failed:', err);
+      figma.ui.postMessage({ type: 'SYNC_TO_GITHUB_ERROR', error: String(err) });
+    }
+    return;
+  }
+
+  // ── PULL_FROM_GITHUB ──────────────────────────────────────────────────────
+  // Pull a specific path back from GitHub.
+  // msg.githubConfig — SyncConfig['github']
+  // msg.target       — 'components' | 'foundations' | 'foundationsJson'
+  if (msg.type === 'PULL_FROM_GITHUB') {
+    try {
+      const syncConfig: SyncConfig = { github: msg.githubConfig as SyncConfig['github'] };
+      const adapter = new SyncAdapter(syncConfig);
+      const target = msg.target as 'components' | 'foundations' | 'foundationsJson';
+      const content = await adapter.pullFromGitHub(target);
+      figma.ui.postMessage({ type: 'PULL_FROM_GITHUB_COMPLETE', target, content });
+    } catch (err) {
+      console.error('[Learning] GitHub pull failed:', err);
+      figma.ui.postMessage({ type: 'PULL_FROM_GITHUB_ERROR', error: String(err) });
+    }
+    return;
+  }
+
+  // ── SEED_DS_KNOWLEDGE ─────────────────────────────────────────────────────
+  // Receives pre-fetched DS assistant MCP results from the UI and stores them
+  // in the KB. The UI is responsible for querying the MCP (it has network access);
+  // the plugin stores and indexes the results.
+  if (msg.type === 'SEED_DS_KNOWLEDGE') {
+    try {
+      const raw = msg.results as MCPKnowledgeResult[];
+      const entries = dsKnowledgeSeeder.fromMCPResults(raw, 'ds_assistant');
+      await knowledgeBase.mergeExternalKnowledge(entries);
+      // Re-derive rules immediately so new knowledge boosts confidence right away
+      const [patterns, externalKnowledge] = await Promise.all([
+        knowledgeBase.getPatterns(),
+        knowledgeBase.getExternalKnowledge('ds_assistant'),
+      ]);
+      const { RuleDeriver } = await import('./learning/RuleDeriver');
+      const deriver = new RuleDeriver();
+      const updatedRules = deriver.derive(patterns, externalKnowledge);
+      await knowledgeBase.mergeRules(updatedRules);
+      figma.ui.postMessage({
+        type: 'DS_KNOWLEDGE_SEEDED',
+        count: entries.length,
+        externallyValidatedRules: updatedRules.filter(r => r.externallyValidated).length,
+      });
+    } catch (err) {
+      console.error('[Learning] DS knowledge seed failed:', err);
+      figma.ui.postMessage({ type: 'DS_KNOWLEDGE_SEED_ERROR', error: String(err) });
+    }
+    return;
+  }
+
+  // ── INFER_COMPONENT_TYPES ─────────────────────────────────────────────────
+  // UI sends a scan result; plugin returns the component type keywords it can
+  // infer. UI uses these to query the DS assistant MCP for each type, then
+  // calls SEED_DS_KNOWLEDGE with the results.
+  if (msg.type === 'INFER_COMPONENT_TYPES') {
+    const scanResult = msg.scanResult as Parameters<typeof learningEngine.processScanResult>[0];
+    const inferred = dsKnowledgeSeeder.inferComponentTypesFromScan(scanResult);
+    const cached = await knowledgeBase.getExternalKnowledge('ds_assistant');
+    const missing = dsKnowledgeSeeder.missingTypes(inferred, cached);
+    figma.ui.postMessage({ type: 'COMPONENT_TYPES_INFERRED', inferred, missing });
+    return;
+  }
+
+  // ── GET_EXTERNAL_KNOWLEDGE ────────────────────────────────────────────────
+  if (msg.type === 'GET_EXTERNAL_KNOWLEDGE') {
+    const entries = await knowledgeBase.getExternalKnowledge(
+      msg.source as string | undefined,
+      msg.componentType as string | undefined
+    );
+    figma.ui.postMessage({ type: 'EXTERNAL_KNOWLEDGE_DATA', entries });
+    return;
+  }
+
+  // ── GET_SYNC_CONFIG ───────────────────────────────────────────────────────
+  if (msg.type === 'GET_SYNC_CONFIG') {
+    const raw = await figma.clientStorage.getAsync('dsci_sync_config');
+    const config = raw ? (JSON.parse(raw as string) as SyncConfig) : {};
+    // Seed default paths so the UI can pre-fill the form without manual typing
+    if (!config.github) {
+      config.github = {
+        token: '',
+        owner: '',
+        repo: '',
+        branch: 'main',
+        paths: { ...DEFAULT_GITHUB_PATHS },
+      };
+    } else if (!config.github.paths) {
+      (config.github as SyncConfig['github'] & { paths?: typeof DEFAULT_GITHUB_PATHS }).paths =
+        { ...DEFAULT_GITHUB_PATHS };
+    }
+    figma.ui.postMessage({ type: 'SYNC_CONFIG_DATA', config });
+    return;
+  }
+});
 
 console.log('✅ DS Context Intelligence plugin initialized');

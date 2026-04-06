@@ -15,7 +15,9 @@
       "Bash(python3 -c \":*)",
       "Bash(ls \"C:\\\\Users\\\\dsara\\\\Context Checker\\\\src\"\" 2>&1 && ls \"C:UsersdsaraContext Checkerdist\"\")",
       "Bash(find '/c/Users/dsara/Context Checker/src' -newer '/c/Users/dsara/Context Checker/dist/manifest.json' -name *.ts -o -name *.html)",
-      "Bash(node -e \":*)"
+      "Bash(node -e \":*)",
+      "Bash(grep -v \"^d.*\\\\.$\")",
+      "Bash(npx tsc:*)"
     ]
   }
 }
