@@ -863,25 +863,27 @@
       display: grid;
       grid-template-columns: 1fr 184px;
       grid-template-rows: auto auto auto auto auto;
-      column-gap: 14px;
+      column-gap: 16px;
       row-gap: 0;
     }
     /* Full-width rows */
     .ds-cm-panel.comp-layout .comp-cm-name-row  { grid-column: 1 / -1; grid-row: 1; display: flex !important; align-items: baseline; gap: 10px; margin-bottom: 10px; }
-    .ds-cm-panel.comp-layout .ds-cm-breakdown   { grid-column: 1 / -1; grid-row: 4; margin-top: 10px; }
+    .ds-cm-panel.comp-layout .ds-cm-breakdown   { grid-column: 1 / -1; grid-row: 4; margin-top: 16px; }
     .ds-cm-panel.comp-layout .ds-cm-token-actions { grid-column: 1 / -1; grid-row: 5; }
     /* Left column */
     .ds-cm-panel.comp-layout .ds-cm-header      { grid-column: 1; grid-row: 2; margin-bottom: 0; }
-    .ds-cm-panel.comp-layout .ds-cm-layers      { grid-column: 1; grid-row: 3; margin-bottom: 0; justify-content: flex-start; }
+    .ds-cm-panel.comp-layout .ds-cm-layers      { grid-column: 1; grid-row: 3; margin-top: 16px; margin-bottom: 0; justify-content: flex-start; }
     /* Right column: radar spans rows 2-3 */
     .ds-cm-panel.comp-layout .ds-cm-radar-wrap  { grid-column: 2; grid-row: 2 / 4; justify-content: flex-end; align-items: flex-start; }
-    .ds-cm-panel.comp-layout #ds-cm-radar-svg   { width: 184px; height: 184px; }
-    /* Score badge visible in comp-layout */
-    .ds-cm-panel.comp-layout .ds-cm-score-badge { display: flex !important; }
+    .ds-cm-panel.comp-layout #ds-cm-radar-svg   { width: 164px; height: 164px; }
+    /* Score badge is moved into the metric row under "Context Maturity" */
+    .ds-cm-panel.comp-layout .ds-cm-score-badge { display: none !important; }
     /* Component name styling */
     .comp-cm-name-row { display: none; }
     .comp-cm-name-text { font-size: 15px; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
     .comp-cm-count-badge { font-size: 10px; color: #6B7280; white-space: nowrap; }
+    .comp-cm-metric-row { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: #9CA3AF; }
+    .comp-cm-metric-row .layer-score { font-weight: 700; color: #E5E5E5; }
 
     /* ── Outside-card: description + doc link ──────────────────────────────── */
     .comp-ext-area { margin-top: 10px; padding: 10px 14px; background: rgba(255,255,255,0.025); border-radius: 10px; border: 1px solid rgba(255,255,255,0.06); }
@@ -3678,7 +3680,7 @@
   </div>
 
   <footer class="version-footer" style="display:flex;align-items:center;justify-content:space-between;text-align:left">
-    <span>v06.04.26.46</span>
+    <span>v07.04.26.2</span>
     <span id="mcp-status-bar" onclick="tryConnectMCPFromBar()" title="Bridge status · Click to connect/retry MCP" style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none">
       <span style="display:flex;align-items:center;gap:3px">
         <span id="bridge-status-dot" style="width:6px;height:6px;border-radius:50%;background:#4B5563;flex-shrink:0;transition:background 0.3s"></span>
@@ -5011,12 +5013,15 @@
       var layersEl = document.getElementById('ds-cm-layers');
       if (layersEl) {
         if (scanType === 'components') {
-          // In comp-layout: score badge is visible, layers row shows dimension count
-          layersEl.innerHTML = '<div style="font-size:11px;color:#6B7280">' + relevantPoints.length + ' context dimensions</div>';
-          if (scoreBadgeEl) scoreBadgeEl.style.display = '';
+          layersEl.innerHTML =
+            '<div class="comp-cm-metric-row">' +
+              '<span>Components: <span class="layer-score">' + Math.round(layerScore) + '</span>/' + layerMax + '</span>' +
+              '<span class="ds-cm-tier-inline ' + tierClass + '">' + escapeHtml(tierText) + '</span>' +
+            '</div>';
+          if (scoreBadgeEl) scoreBadgeEl.style.display = 'none';
           if (radarSvgEl) {
-            radarSvgEl.setAttribute('width', '184');
-            radarSvgEl.setAttribute('height', '184');
+            radarSvgEl.setAttribute('width', '164');
+            radarSvgEl.setAttribute('height', '164');
           }
         } else {
           layersEl.innerHTML = '<div>' + escapeHtml(layerLabel) + ': <span class="layer-score">' + Math.round(layerScore) + '</span>/' + layerMax + '</div>';
@@ -5427,6 +5432,7 @@
     // ── Map an issue to a display category ────────────────────────────────
     var CAT_ORDER = [
       'Description missing',
+      'Variant Descriptions missing',
       'Description quality',
       'Naming convention',
       'Token scope',
@@ -5447,6 +5453,15 @@
       if (cat && cat !== 'missing' && cat !== 'poor' && cat !== 'inconsistent' && cat !== 'outdated') return cat;
 
       var msg = (issue.message || '').toLowerCase();
+
+      // Variant description issues deserve a dedicated accordion group
+      var issueNodeName = issue && issue.nodeName ? String(issue.nodeName) : '';
+      var isVariantIssue = msg.includes('variant') || issueNodeName.indexOf('=') !== -1;
+      if (isVariantIssue &&
+          (msg.includes('description') || msg.includes('descri')) &&
+          (msg.includes('missing') || msg.includes('empty') || msg.includes('no description') || msg.includes('lacks'))) {
+        return 'Variant Descriptions missing';
+      }
 
       // Description issues
       if (msg.includes('description') || msg.includes('descri')) {
@@ -5660,6 +5675,26 @@
       missing = _uniqStrings(missing);
       needsWork = _uniqStrings(needsWork);
       completed = _uniqStrings(completed);
+
+      // Add implicit "completed" checks when a context area has no related issue.
+      // Example: token/style descriptions already exist -> count as completed.
+      var categoryPresence = {};
+      for (i = 0; i < issues.length; i++) {
+        var catName = getIssueDisplayCategory(issues[i]);
+        if (catName) categoryPresence[catName] = true;
+      }
+      var hasTokenOrStyleIssues = issues.some(function(it) {
+        return it && (it.nodeType === 'Variable' || it.nodeType === 'Style');
+      });
+      var hasDescriptionGap =
+        !!categoryPresence['Description missing'] ||
+        !!categoryPresence['Variant Descriptions missing'] ||
+        !!categoryPresence['Description quality'];
+      if (hasTokenOrStyleIssues && !hasDescriptionGap) {
+        completed.push('Descriptions');
+      }
+      completed = _uniqStrings(completed);
+
       if (missing.length === 0 && needsWork.length === 0 && completed.length === 0) return '';
 
       var statusMap = {
