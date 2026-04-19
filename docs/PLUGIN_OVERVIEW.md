@@ -2,9 +2,40 @@
 
 ## Τι είναι
 
-**DS Context Intelligence** είναι ένα Figma plugin που αξιολογεί την **ωριμότητα (maturity) ενός Design System** μέσα από τρεις άξονες: **Variables / Tokens**, **Styles**, και **Components**. Στόχος του είναι να δώσει στις ομάδες design & engineering μια σαφή εικόνα για το πόσο έτοιμο είναι το Design System τους να «διαβαστεί» και να αξιοποιηθεί από AI εργαλεία, αλλά και πόσο συνεκτικό και πλήρες είναι στην πράξη.
+**DS Context Intelligence** είναι ένα Figma plugin που: (α) **δημιουργεί από το μηδέν** ένα ολόκληρο Design System foundation μέσα από έναν 13-step Onboarding Wizard που γράφει live σε Figma Variables, και (β) αξιολογεί την **ωριμότητα (maturity) ενός υπάρχοντος Design System** μέσα από τρεις άξονες: **Variables / Tokens**, **Styles**, και **Components**. Στόχος του είναι να δώσει στις ομάδες design & engineering μια σαφή εικόνα για το πόσο έτοιμο είναι το Design System τους να «διαβαστεί» και να αξιοποιηθεί από AI εργαλεία, αλλά και πόσο συνεκτικό και πλήρες είναι στην πράξη.
 
 Το plugin τρέχει αποκλειστικά μέσα στο Figma Desktop (plugin sandbox) και δεν απαιτεί εξωτερικά services για τη βασική του λειτουργία.
+
+---
+
+## Onboarding Wizard (13 βήματα, 0–12)
+
+Ο Wizard γράφει live σε Figma Variables σε κάθε βήμα — δεν υπάρχει τελικό «Commit» κουμπί. Το draft κρατιέται στο `figma.clientStorage` (κλειδί `onboarding_draft`) και το ιστορικό undo κινείται με `WIZARD_TAKE_SNAPSHOT` / `WIZARD_UNDO_LAST`.
+
+### Header
+
+- Ο **τίτλος γίνεται το όνομα** που δίνει ο χρήστης στο Step 0 (π.χ. "Acme DS"). Κάτω από τον τίτλο εμφανίζεται ένα μικρό tonal tag με το εντοπισμένο σύστημα (π.χ. `System: RADD 2.0`).
+- Το **logo είναι clickable** — κλικάρεις οποιαδήποτε στιγμή και επιστρέφει στο Step 0.
+
+### Colour pipeline
+
+- **Logo → brand colours**: `onbExtractLogoColor` τρέχει ένα 18-bin weighted-hue histogram και επιστρέφει `{primary, secondary}` όταν βρει δεύτερη απόχρωση ≥30° μακριά και ≥20% του primary score.
+- **Secondary commit**: γράφει στο `core-colours/brand/Secondary/<variant>` ως αδελφός του Primary folder (`wizardWritePaletteToSpecificCollection` στο `src/code.ts`).
+- **Auto-access pass** (`onbAutoAccessPass`) σε 4 φάσεις:
+  - **Phase −1**: rebase `accent-sec` / `on-accent-sec` σε neutral αν δεν υπάρχει secondary brand.
+  - **Phase 0**: προληπτική προώθηση `accent` / `text-link` / `text-dominant` στο αδελφό `/brand` token όταν ταιριάζει.
+  - **Phase 1**: διορθώνει πρώτα το label (on-accent) ώστε να διατηρηθεί η απόχρωση του accent.
+  - **Phase 2**: αλλάζει το ίδιο το accent μόνο ως fallback, διαλέγοντας την πιο κοντινή σε φωτεινότητα απόχρωση.
+- Κάθε token row εμφανίζει ένα **WCAG ax badge** (AAA / AA / AA-large / fail).
+
+### Typography
+
+- **Step 07 (Type families)** — κουμπί **Apply** ανά family γράφει live στο `.core/font-family/<role>` μέσω του `ONBOARDING_SET_FONT_FAMILY_TOKEN`.
+- **Step 08 (Text Styles)** — όταν δεν έχει οριστεί secondary family, **auto-applies** το primary family σε κάθε text style (ένα batch `UPDATE_VARIABLE` burst + ένα refetch). Signature cache (`window.onbTsLastAutoApplySig`) αποτρέπει re-firing.
+
+### Completion screen
+
+Με το Finish, εμφανίζεται πανηγυρική οθόνη με παλλόμενο logo + όνομα συστήματος και ένα 3-stage canvas-confetti burst. Η βιβλιοθήκη `canvas-confetti` κάνει inline στο build time (στο marker `<!-- __CANVAS_CONFETTI__ -->` από το `scripts/write-version.js`) επειδή το Figma sandbox **μπλοκάρει nested iframes σε external origins** ακόμα κι όταν είναι στα `allowedDomains`.
 
 ---
 

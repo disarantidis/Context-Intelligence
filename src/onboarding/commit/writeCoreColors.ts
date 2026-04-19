@@ -31,6 +31,11 @@ export async function writeCoreColors(draft: OnboardingDraft): Promise<number> {
   // ── Secondary palette ──────────────────────────────────────────────────────
   if (draft.palette.secondary) {
     count += await writePalette(core, 'brand-second', draft.palette.secondary);
+  } else {
+    // User has no secondary — remove any pre-existing brand-second/* variables,
+    // the entire `.secondary` collection (if any), and any `secondary` mode /
+    // scheme-variable under scheme collections so the output matches intent.
+    count += await removeSecondaryArtifacts(core);
   }
 
   // ── Accent & neutral extra shades (user-entered hexes) ─────────────────────
@@ -82,6 +87,71 @@ async function writePalette(
     count++;
   }
   return count;
+}
+
+// Clean every secondary artifact the user might have from a previous run:
+//   • `.core` COLOR variables under `brand-second/*` or `core-colours/secondary/**`
+//   • An entire `.secondary` / `secondary` collection
+//   • Any mode whose name contains "secondary" on scheme collections
+//   • Scheme variables under `color/secondary*` / `*/secondary/*`
+async function removeSecondaryArtifacts(core: VariableCollection): Promise<number> {
+  let removed = 0;
+
+  // 1) .core variables under secondary-named paths
+  const allVars = await figma.variables.getLocalVariablesAsync();
+  for (const v of allVars) {
+    if (v.variableCollectionId !== core.id) continue;
+    const n = v.name;
+    const isSecondary =
+      n.startsWith('brand-second/') ||
+      n.indexOf('/brand-second/') !== -1 ||
+      n.indexOf('core-colours/secondary/') !== -1 ||
+      (/\/secondary\//.test(n) && /core-colours/.test(n));
+    if (isSecondary) {
+      try { v.remove(); removed++; } catch { /* ignore */ }
+    }
+  }
+
+  // 2) Remove a stand-alone `.secondary` / `secondary` collection, if present.
+  const collections = await figma.variables.getLocalVariableCollectionsAsync();
+  for (const c of collections) {
+    const lc = c.name.toLowerCase();
+    if (lc === '.secondary' || lc === 'secondary') {
+      try { c.remove(); removed++; } catch { /* ignore */ }
+    }
+  }
+
+  // 3) In scheme-style collections, drop modes named like "secondary"
+  //    and any COLOR variable whose name itself references secondary.
+  const remaining = await figma.variables.getLocalVariableCollectionsAsync();
+  for (const c of remaining) {
+    const lc = c.name.toLowerCase();
+    const looksLikeScheme =
+      lc === 'core brand scheme' ||
+      lc === '.scheme' ||
+      lc === 'scheme' ||
+      lc.indexOf('scheme') !== -1;
+    if (!looksLikeScheme) continue;
+
+    // Remove secondary modes (keep ≥ 1 mode so the collection stays valid).
+    const modesSnapshot = c.modes.slice();
+    for (const m of modesSnapshot) {
+      if (/secondary/i.test(m.name) && c.modes.length > 1) {
+        try { c.removeMode(m.modeId); removed++; } catch { /* ignore */ }
+      }
+    }
+
+    // Remove any scheme variable referencing secondary in its name.
+    for (const id of c.variableIds) {
+      const v = await figma.variables.getVariableByIdAsync(id);
+      if (!v) continue;
+      if (/secondary/i.test(v.name) || /brand-second/i.test(v.name)) {
+        try { v.remove(); removed++; } catch { /* ignore */ }
+      }
+    }
+  }
+
+  return removed;
 }
 
 function uniqueHexes(arr: string[]): string[] {

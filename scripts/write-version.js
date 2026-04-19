@@ -28,7 +28,20 @@ try {
 fs.writeFileSync(statePath, JSON.stringify({ date: today, n }, null, 2), 'utf8');
 
 const version = `${dd}.${mm}.${yy}.${n}`;
-const html = fs.readFileSync(srcHtmlPath, 'utf8').replace(/__BUILD_VERSION__/g, version);
+let html = fs.readFileSync(srcHtmlPath, 'utf8').replace(/__BUILD_VERSION__/g, version);
+
+// Inline canvas-confetti (used by the wizard completion screen). Bundling
+// the library at build time avoids any CDN/CSP dance in Figma's sandbox.
+try {
+  const ccPath = path.join(root, 'node_modules', 'canvas-confetti', 'dist', 'confetti.browser.js');
+  const cc = fs.readFileSync(ccPath, 'utf8');
+  html = html.replace(
+    '<!-- __CANVAS_CONFETTI__ -->',
+    '<script>/* canvas-confetti (inlined) */\n' + cc + '\n</script>'
+  );
+} catch (e) {
+  console.warn('Warning: canvas-confetti not found — completion confetti will be skipped.', e.message);
+}
 
 if (!fs.existsSync(distPath)) fs.mkdirSync(distPath, { recursive: true });
 fs.writeFileSync(distHtmlPath, html, 'utf8');
