@@ -10,9 +10,9 @@
  * must fall back to rule-only results. Responses must be validated
  * (schema check) before being trusted; we never blindly apply AI output.
  *
- * NOTE: learning/AIAnalysisModule and mcp-maturity-service still contain
- * their own fetch() calls. They should be migrated to route through this
- * module in a follow-up. This file establishes the canonical path.
+ * NOTE: learning/AIAnalysisModule still contains its own fetch() calls.
+ * They should be migrated to route through this module in a follow-up.
+ * This file establishes the canonical path.
  */
 
 import type { AIPayload, AIEnrichedResult } from './types';

@@ -3699,7 +3699,6 @@ Output ONLY the description. No quotes, no preamble.`
 // ============================================================================
 
 let _clScanAbort = false;
-const CL_SAVE_SIZE_LIMIT = 4000000;
 
 const CL_SHAPE_PRIMITIVES: Record<string, boolean> = { RECTANGLE: true, ELLIPSE: true, VECTOR: true, LINE: true, BOOLEAN_OPERATION: true, STAR: true, POLYGON: true };
 const CL_LAYOUT_TYPES: Record<string, boolean> = { FRAME: true, COMPONENT: true, INSTANCE: true, COMPONENT_SET: true };
