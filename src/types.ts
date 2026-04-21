@@ -324,3 +324,145 @@ export interface EnrichedComponentAudit extends ComponentAudit {
 }
 
 // All types above are exported via export interface / export type
+
+// ============================================================================
+// 6-Layer Architecture Interfaces (spec contracts)
+// ============================================================================
+
+/** Serialized node data (read-only snapshot from Layer 1) */
+export interface SerializedNode {
+  id: string;
+  name: string;
+  type: string;
+  description?: string;
+  boundVariables?: Record<string, any>;
+  pluginData?: Record<string, string>;
+}
+
+/** Maps variable ID → Figma Variable */
+export type VariableMap = Record<string, Variable>;
+
+/** Maps collection ID → Figma VariableCollection */
+export type CollectionMap = Record<string, VariableCollection>;
+
+/** Maps style ID → paint/text/effect style */
+export type StyleMap = Record<string, BaseStyle>;
+
+/** Raw component metadata from Layer 1 */
+export interface ComponentMeta {
+  id: string;
+  name: string;
+  type: string;
+  description?: string;
+  documentationLinks?: string[];
+  codeSyntax?: Record<string, string>;
+}
+
+/** Snapshot of relevant clientStorage keys captured during data collection */
+export interface StorageSnapshot {
+  bakedRules?: any;
+  enrichedRules?: any;
+  connectorConfig?: any;
+}
+
+/** Normalised data produced by Layer 1 (Data Collection) */
+export interface CollectedData {
+  nodes: SerializedNode[];
+  variables: VariableMap;
+  collections: CollectionMap;
+  styles: StyleMap;
+  components: ComponentMeta[];
+  pluginStorageSnapshot: StorageSnapshot;
+}
+
+/** Per-rule finding produced by Layer 2 (Rule Engine) */
+export interface RuleResult {
+  ruleId: string;
+  severity: 'error' | 'warning' | 'info';
+  target: string;
+  targetType: 'component' | 'variable' | 'style';
+  message: string;
+  suggestedFix?: string;
+}
+
+/** Aggregate output of Layer 2 (Rule Engine) */
+export interface RuleEngineOutput {
+  results: RuleResult[];
+  contextMaturityScore: number;
+  dimensionScores: Record<string, number>;
+  passedRules: number;
+  failedRules: number;
+}
+
+/** Named pattern observed across scans (used in LearnedContext) */
+export interface PatternEntry {
+  pattern: string;
+  frequency: number;
+  lastSeen: string;
+}
+
+/** Record of a description that was kept or edited by the user */
+export interface DescHistory {
+  targetId: string;
+  original: string;
+  final: string;
+  accepted: boolean;
+  timestamp: string;
+}
+
+/** Score recorded for a component or variable over time */
+export interface ScoreEntry {
+  targetId: string;
+  score: number;
+  timestamp: string;
+}
+
+/** Rule inferred from scan history */
+export interface CustomRule {
+  ruleId: string;
+  description: string;
+  pattern: string;
+  confidence: number;
+  source: 'scan' | 'ai_enrichment' | 'feedback';
+}
+
+/** Context learned from previous scans (input to Layer 3) */
+export interface LearnedContext {
+  namingPatterns: PatternEntry[];
+  descriptionHistory: DescHistory[];
+  scoreHistory: ScoreEntry[];
+  inferredRules: CustomRule[];
+}
+
+/** Payload sent from Layer 3 to the Anthropic API */
+export interface AIPayload {
+  systemPrompt: string;
+  collectedData: CollectedData;
+  ruleResults: RuleEngineOutput;
+  storedContext: LearnedContext;
+  requestType: 'descriptions' | 'scores' | 'full-analysis';
+}
+
+/** Write operation requested from Layer 3/5 → executed by Layer 6 */
+export interface ActionRequest {
+  type: 'set-description' | 'set-annotation' | 'set-code-syntax' | 'set-scope';
+  targetId: string;
+  targetType: 'variable' | 'component';
+  value: any;
+  platform?: 'WEB' | 'ANDROID' | 'iOS';
+}
+
+/** Result of a single action execution by Layer 6 */
+export interface ActionResult {
+  action: ActionRequest;
+  success: boolean;
+  error?: string;
+}
+
+/** Enriched analysis result from Layer 3 (AI Orchestration) */
+export interface AIEnrichedResult {
+  ruleResults: RuleResult[];
+  generatedDescriptions: Record<string, string>;
+  insights: string[];
+  suggestedActions: ActionRequest[];
+}
