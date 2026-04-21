@@ -270,7 +270,7 @@ async function wizardFindMatchingFolders(kind: WizardPaletteKind, functionalKey?
     const entry = byFolder[key];
     const numeric = Object.keys(entry.leaves).filter(l => /^\d+$/.test(l)).length;
     if (numeric < 3) continue;
-    const pathLower = entry.parent.toLowerCase();
+    const pathLower = asciiLowerCase(entry.parent);
 
     let entryKind: WizardPaletteKind | null = null;
     let entryFuncKey: string | undefined;
@@ -668,16 +668,25 @@ async function loadRulesConfig() {
 }
 
 // Initialize on startup
-loadRulesConfig().then(() => {
-  // Send data to UI as soon as plugin is ready so the UI has something to work with
-  setTimeout(() => {
+loadRulesConfig()
+  .then(() => {
+    // Send data to UI as soon as plugin is ready so the UI has something to work with
+    setTimeout(() => {
+      figma.ui.postMessage({
+        type: 'INIT',
+        data: { ready: true, source: 'launch' },
+        currentSize: { width: PLUGIN_UI_WIDTH, height: PLUGIN_UI_HEIGHT_DEFAULT },
+      });
+    }, 0);
+  })
+  .catch(() => {
+    // Rules failed to load — send INIT anyway so the UI does not hang.
     figma.ui.postMessage({
       type: 'INIT',
       data: { ready: true, source: 'launch' },
       currentSize: { width: PLUGIN_UI_WIDTH, height: PLUGIN_UI_HEIGHT_DEFAULT },
     });
-  }, 0);
-});
+  });
 
 // Load rubric: try cache first (24 h TTL), then remote, then fall back to null (uses defaults)
 // Delegated to Layer 3 (ai-orchestrator.fetchRubric) which shares the same cache key + TTL.
@@ -922,7 +931,7 @@ function _jex_transformToFinalFormat(rawData: any): { tokens: any; count: number
     c.variables.forEach((v: any) => {
       if (!v.name || !v.type) return;
       const tokenPath = _jex_normalizeVariableName(v.name, c.name);
-      const vType = v.type.toLowerCase();
+      const vType = asciiLowerCase(v.type);
       const finalType = vType === 'float' ? 'number' : vType;
       const isTypography = /^typography\//i.test(tokenPath);
       let typographyWritten = false;
@@ -977,9 +986,9 @@ function _jex_normalizeFontWeightLiteral(v: any): any {
   if (typeof v !== 'string') return v;
   const t = v.trim();
   if (/^\d+(\.\d+)?$/.test(t)) return String(Math.round(parseFloat(t)));
-  const compact = t.replace(/\s+/g, '').toLowerCase();
+  const compact = asciiLowerCase(t.replace(/\s+/g, ''));
   if (FONT_WEIGHT_NAME_TO_NUM[compact] !== undefined) return FONT_WEIGHT_NAME_TO_NUM[compact];
-  const alpha = t.replace(/[^a-zA-Z]/g, '').toLowerCase();
+  const alpha = asciiLowerCase(t.replace(/[^a-zA-Z]/g, ''));
   if (alpha && FONT_WEIGHT_NAME_TO_NUM[alpha] !== undefined) return FONT_WEIGHT_NAME_TO_NUM[alpha];
   return v;
 }
@@ -994,8 +1003,8 @@ function _jex_formatFloatForExport(value: number): string {
 
 function _jex_normalizeFontFamilyAliasSegments(str: string): string {
   return str
-    .replace(/\{font-family\.([^}]+)\}/gi, (_: string, seg: string) => '{font-family.' + seg.toLowerCase() + '}')
-    .replace(/\{fontFamilies\.([^}]+)\}/gi, (_: string, seg: string) => '{fontFamilies.' + seg.toLowerCase() + '}');
+    .replace(/\{font-family\.([^}]+)\}/gi, (_: string, seg: string) => '{font-family.' + asciiLowerCase(seg) + '}')
+    .replace(/\{fontFamilies\.([^}]+)\}/gi, (_: string, seg: string) => '{fontFamilies.' + asciiLowerCase(seg) + '}');
 }
 
 function _jex_fixAliasPaths(obj: any): any {
@@ -1086,7 +1095,7 @@ function _jex_fixCoreTokens(obj: any, pathParts: string[] = []): any {
   const out: any = {};
   for (const k of Object.keys(obj)) {
     let outKey = k;
-    if (pathParts.length === 1 && (pathParts[0] === 'font-family' || pathParts[0] === 'fontFamilies')) outKey = k.toLowerCase();
+    if (pathParts.length === 1 && (pathParts[0] === 'font-family' || pathParts[0] === 'fontFamilies')) outKey = asciiLowerCase(k);
     out[outKey] = _jex_fixCoreTokens(obj[k], [...pathParts, k]);
   }
   return out;
@@ -1330,8 +1339,8 @@ function _jex_generateThemeId(): string {
 
 function _jex_getCollectionByNameLoose(map: Record<string, any>, primary: string): any {
   if (map[primary]) return map[primary];
-  const lower = primary.toLowerCase();
-  for (const k of Object.keys(map)) if (k.toLowerCase() === lower) return map[k];
+  const lower = asciiLowerCase(primary);
+  for (const k of Object.keys(map)) if (asciiLowerCase(k) === lower) return map[k];
   return undefined;
 }
 
@@ -1361,7 +1370,7 @@ function _jex_buildThemes(rawData: any, tokenSetNames: string[]): any[] {
   function formatStyleId(id: string) { const cleanId = String(id).replace(/^S:/, ''); return 'S:' + generateHashFromId(cleanId) + ','; }
   function toTokenStudioCase(name: string) {
     const parts = name.replace(/\s+/g, '-').split('-');
-    return parts.map((p: string) => (p.length === 1 && /[A-Z]/.test(p)) ? p : p.toLowerCase()).join('-');
+    return parts.map((p: string) => (p.length === 1 && /[A-Z]/.test(p)) ? p : asciiLowerCase(p)).join('-');
   }
 
   function buildStyleRefsForTheme(themeName: string, themeGroup: string | null): Record<string, string> {
@@ -1465,7 +1474,7 @@ function _jex_buildThemes(rawData: any, tokenSetNames: string[]): any[] {
   const modeCol = collectionMap['.mode'];
   if (modeCol) {
     modeCol.modes.forEach((mode: any, idx: number) => {
-      const modeName = mode.name.toLowerCase();
+      const modeName = asciiLowerCase(mode.name);
       const tokenSetKey = 'mode/' + modeName;
       if (tokenSetNames.indexOf(tokenSetKey) !== -1) {
         const ss: any = {}; ss[tokenSetKey] = 'enabled';
@@ -1483,7 +1492,7 @@ function _jex_buildThemes(rawData: any, tokenSetNames: string[]): any[] {
     Object.keys(collectionMap).forEach(colName => {
       const col = collectionMap[colName];
       col.modes.forEach((mode: any, idx: number) => {
-        const ml = mode.name.toLowerCase();
+        const ml = asciiLowerCase(mode.name);
         if (ml === schemeName || ml.indexOf(schemeName) !== -1) { schemeCol = col; schemeModeIdx = idx; }
       });
     });
@@ -1496,7 +1505,7 @@ function _jex_buildThemes(rawData: any, tokenSetNames: string[]): any[] {
   const secondaryCol = collectionMap['.secondary'];
   if (secondaryCol) {
     secondaryCol.modes.forEach((mode: any, idx: number) => {
-      const modeName = mode.name.toLowerCase();
+      const modeName = asciiLowerCase(mode.name);
       if (schemeNames.indexOf(modeName) !== -1) return;
       const tokenSetKey = 'secondary/' + modeName;
       if (tokenSetNames.indexOf(tokenSetKey) !== -1) {
@@ -1509,7 +1518,7 @@ function _jex_buildThemes(rawData: any, tokenSetNames: string[]): any[] {
   const restrictedCol = collectionMap['_restricted'];
   if (restrictedCol) {
     restrictedCol.modes.forEach((mode: any, idx: number) => {
-      const modeName = mode.name.toLowerCase().replace(/\s+/g, '-');
+      const modeName = asciiLowerCase(mode.name).replace(/\s+/g, '-');
       const tokenSetKey = 'restrictions/' + modeName;
       if (tokenSetNames.indexOf(tokenSetKey) !== -1) {
         const ss: any = {}; ss[tokenSetKey] = 'enabled';
@@ -1522,7 +1531,7 @@ function _jex_buildThemes(rawData: any, tokenSetNames: string[]): any[] {
   const bpMap: Record<string, string> = { 's-mobile':'mobile','m-tablet':'tablet','l-laptop':'laptop','xl-desktop':'desktop','xxl-large-desktop':'large-desktop' };
   if (breakpointCol) {
     breakpointCol.modes.forEach((mode: any, idx: number) => {
-      const modeLower = mode.name.toLowerCase().replace(/\s+/g, '-');
+      const modeLower = asciiLowerCase(mode.name).replace(/\s+/g, '-');
       const tokenSetSlug = bpMap[modeLower] || modeLower.split('-').slice(1).join('-') || modeLower;
       const tokenSetKey = 'breakpoint/' + tokenSetSlug;
       if (tokenSetNames.indexOf(tokenSetKey) !== -1) {
@@ -1538,7 +1547,7 @@ function _jex_buildThemes(rawData: any, tokenSetNames: string[]): any[] {
       const tokenSetKey = 'layout/layout';
       if (tokenSetNames.indexOf(tokenSetKey) !== -1) {
         const ss: any = {}; ss[tokenSetKey] = 'enabled';
-        themeConfigs.push({ name: mode.name.toLowerCase(), group: 'layout', selectedTokenSets: ss, collection: layoutCol, modeIndex: idx });
+        themeConfigs.push({ name: asciiLowerCase(mode.name), group: 'layout', selectedTokenSets: ss, collection: layoutCol, modeIndex: idx });
       }
     });
   }
@@ -1561,7 +1570,7 @@ function _jex_buildThemes(rawData: any, tokenSetNames: string[]): any[] {
       config.collection.variables.forEach((v: any) => {
         if (v.name && v.id) {
           const varName = v.name.replace(/\//g, '.');
-          if (varPrefix && varName.toLowerCase().startsWith(varPrefix.slice(0, -1).toLowerCase() + '.')) figmaVarRefs[varName] = _jex_stripVariableIdPrefix(v.id);
+          if (varPrefix && asciiLowerCase(varName).startsWith(asciiLowerCase(varPrefix.slice(0, -1)) + '.')) figmaVarRefs[varName] = _jex_stripVariableIdPrefix(v.id);
           else figmaVarRefs[varPrefix + varName] = _jex_stripVariableIdPrefix(v.id);
         }
       });
@@ -3969,8 +3978,8 @@ function _clComputeLayerSummary(tree: any[]): { layerCount: number; tokenBoundPr
 }
 
 function _clIsDeprecated(node: any): boolean {
-  const desc = (node.description || '').toLowerCase();
-  const name = (node.name || '').toLowerCase();
+  const desc =asciiLowerCase( (node.description || ''));
+  const name =asciiLowerCase( (node.name || ''));
   return desc.includes('deprecated') || name.includes('deprecated');
 }
 
@@ -4315,7 +4324,7 @@ function propToCssProperty(prop: string): string {
 }
 
 function inferLayerRole(nodeName: string): string {
-  const n = nodeName.toLowerCase();
+  const n = asciiLowerCase(nodeName);
   if (n.includes('background') || n.includes(' bg') || n === 'bg') return 'background';
   if (n.includes('icon') || n.includes('glyph')) return 'icon';
   if (n.includes('label') || n.includes('text') || n.includes('title') || n.includes('caption')) return 'foreground';
@@ -4426,7 +4435,7 @@ function rgbaToHex(color: { r: number; g: number; b: number; a?: number }): stri
   const r = Math.round(color.r * 255).toString(16).padStart(2, '0');
   const g = Math.round(color.g * 255).toString(16).padStart(2, '0');
   const b = Math.round(color.b * 255).toString(16).padStart(2, '0');
-  return `#${r}${g}${b}`.toUpperCase();
+  return asciiUpperCase(`#${r}${g}${b}`);
 }
 
 /**
@@ -4751,7 +4760,7 @@ function getVariableSourceValue(variable: Variable): string {
  * In those cases, missing-description findings are not actionable.
  */
 function hasExtensionKeyword(name: string): boolean {
-  const n = (name || '').toLowerCase();
+  const n =asciiLowerCase( (name || ''));
   if (!n) return false;
   return (
     n.includes('/extension/') ||
@@ -4785,12 +4794,12 @@ function compareWizardPathSegment(ca: string, cb: string): number {
   re.lastIndex = 0;
   while ((m = re.exec(a)) !== null) {
     if (m[1] !== undefined) toksA.push({ kind: 'num', n: parseInt(m[1], 10), raw: m[1] });
-    else toksA.push({ kind: 'str', s: m[2].toLowerCase() });
+    else toksA.push({ kind: 'str', s: asciiLowerCase(m[2]) });
   }
   re.lastIndex = 0;
   while ((m = re.exec(b)) !== null) {
     if (m[1] !== undefined) toksB.push({ kind: 'num', n: parseInt(m[1], 10), raw: m[1] });
-    else toksB.push({ kind: 'str', s: m[2].toLowerCase() });
+    else toksB.push({ kind: 'str', s: asciiLowerCase(m[2]) });
   }
   const n = Math.max(toksA.length, toksB.length);
   for (let i = 0; i < n; i++) {
@@ -4850,7 +4859,7 @@ function sortVariablesLikeFigmaPanel(variables: Variable[], collection: Variable
 /** Collections excluded from the semantic-colors wizard (not shown as tabs or default table). */
 function isSemanticWizardExcludedCollection(name: string): boolean {
   const n = (name || '').trim();
-  return n === '.scheme' || n.toLowerCase() === 'scheme';
+  return n === '.scheme' || asciiLowerCase(n) === 'scheme';
 }
 
 /** First hop from `modeId` lands on a variable in `coreCollId` (direct link to .core). */
@@ -4943,7 +4952,7 @@ function hasOwnOrSharedStyleDescription(style: BaseStyle, groupName: string): bo
  * We still scan them, but suppress their issues at the end of the collection pass.
  */
 function isChildCollectionForIssueSuppression(collectionName: string, _variables: Variable[]): boolean {
-  const lower = (collectionName || '').toLowerCase();
+  const lower =asciiLowerCase( (collectionName || ''));
   if (
     hasExtensionKeyword(collectionName) ||
     lower.includes('child') ||
@@ -4958,7 +4967,7 @@ function isChildCollectionForIssueSuppression(collectionName: string, _variables
 }
 
 function isCoreSemanticCollectionName(collectionName: string): boolean {
-  const n = (collectionName || '').toLowerCase();
+  const n =asciiLowerCase( (collectionName || ''));
   return (
     n.includes('semantic') ||
     n.includes('primitive') ||
@@ -5972,7 +5981,7 @@ async function scanSelection(config: ScanConfig) {
     
     // Scan COMPONENT_SET or COMPONENT
     if (node.type === 'COMPONENT_SET' || node.type === 'COMPONENT') {
-      console.log(`  → Analyzing ${node.type.toLowerCase()}...`);
+      console.log(`  → Analyzing ${asciiLowerCase(node.type)}...`);
       const audit = await analyzeWithTimeout(node);
       if (audit) {
         audits.push(audit);
@@ -5991,7 +6000,7 @@ async function scanSelection(config: ScanConfig) {
         n.type === 'COMPONENT' || n.type === 'COMPONENT_SET'
       ) as (ComponentNode | ComponentSetNode)[];
       
-      console.log(`  → Found ${components.length} components in ${node.type.toLowerCase()}`);
+      console.log(`  → Found ${components.length} components in ${asciiLowerCase(node.type)}`);
       
       for (let ci = 0; ci < components.length; ci++) {
         await yieldToEventLoop();
@@ -7035,7 +7044,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
           variable = figma.variables.createVariable(`${prefix}${shade}`, saveCore, 'COLOR');
         }
         variable.setValueForMode(saveModeId, colorVal);
-        resultShades[shade] = hexStr.toUpperCase();
+        resultShades[shade] = asciiUpperCase(hexStr);
       }
       figma.ui.postMessage({ type: 'WIZARD_SECONDARY_SAVED', name: saveName, ok: true, shades: resultShades });
     } catch (e: any) {
@@ -7056,7 +7065,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
       }
       const brCore = brColls.find(c => c.name === '.core') ??
                      brColls.find(c => c.name === 'core') ??
-                     brColls.find(c => c.name.toLowerCase() === '.core');
+                     brColls.find(c => asciiLowerCase(c.name) === '.core');
       if (!brCore) {
         figma.ui.postMessage({ type: 'WIZARD_BRAND_COLORS', brands: [], standalone: [] });
         return;
@@ -7143,7 +7152,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
 
       // Debug hint if still nothing found
       const debugPaths = brands.length === 0 && brStandalone.length === 0
-        ? brCoreVars.filter(v => v.name.toLowerCase().includes('brand')).slice(0, 8).map(v => v.name)
+        ? brCoreVars.filter(v => asciiLowerCase(v.name).includes('brand')).slice(0, 8).map(v => v.name)
         : undefined;
       figma.ui.postMessage({ type: 'WIZARD_BRAND_COLORS', brands, standalone: brStandalone, debugPaths });
     } catch (e: any) {
@@ -7188,7 +7197,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
           variable = figma.variables.createVariable(`${brPrefix}${shade}`, brSaveCore, 'COLOR');
         }
         variable.setValueForMode(brSaveModeId, colorVal);
-        brResultShades[shade] = hexStr.toUpperCase();
+        brResultShades[shade] = asciiUpperCase(hexStr);
       }
       figma.ui.postMessage({ type: 'WIZARD_BRAND_SAVED', name: brSaveName, ok: true, shades: brResultShades });
     } catch (e: any) {
@@ -7225,7 +7234,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
       const g = parseInt(brtHex.slice(3,5),16)/255;
       const b = parseInt(brtHex.slice(5,7),16)/255;
       brtVar.setValueForMode(brtModeId, { r, g, b, a: 1 });
-      figma.ui.postMessage({ type: 'WIZARD_BRAND_TOKEN_SAVED', tokenName: brtName, hex: brtHex.toUpperCase(), ok: true });
+      figma.ui.postMessage({ type: 'WIZARD_BRAND_TOKEN_SAVED', tokenName: brtName, hex: asciiUpperCase(brtHex), ok: true });
     } catch (e: any) {
       figma.ui.postMessage({ type: 'WIZARD_BRAND_TOKEN_SAVED', tokenName: msg.tokenName, ok: false, error: String(e?.message ?? e) });
     }
@@ -7248,7 +7257,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
       }
       const baseCore = baseColls.find(c => c.name === '.core') ??
                        baseColls.find(c => c.name === 'core') ??
-                       baseColls.find(c => c.name.toLowerCase() === '.core');
+                       baseColls.find(c => asciiLowerCase(c.name) === '.core');
       if (!baseCore) {
         figma.ui.postMessage({ type: 'WIZARD_BASE_COLORS', groups: [], standalone: [] });
         return;
@@ -7362,7 +7371,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
         if (bsVar) await _wizSnapAndPush(`base-token/${bsSaveName}`, [bsVar], bsModeId);
         if (!bsVar) bsVar = figma.variables.createVariable(bsVarName, bsCore, 'COLOR');
         bsVar.setValueForMode(bsModeId, toRGBA(bsSingleHex));
-        figma.ui.postMessage({ type: 'WIZARD_BASE_SAVED', name: bsSaveName, varName: bsVarName, hex: bsSingleHex.toUpperCase(), ok: true });
+        figma.ui.postMessage({ type: 'WIZARD_BASE_SAVED', name: bsSaveName, varName: bsVarName, hex: asciiUpperCase(bsSingleHex), ok: true });
       } else {
         // Group palette save — resolve the correct prefix by finding an existing var first
         const bsCandidatePrefixes = [
@@ -7391,7 +7400,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
           let variable = bsExisting[shade];
           if (!variable) variable = figma.variables.createVariable(`${bsPrefix}${shade}`, bsCore, 'COLOR');
           variable.setValueForMode(bsModeId, toRGBA(hexStr));
-          bsResultShades[shade] = hexStr.toUpperCase();
+          bsResultShades[shade] = asciiUpperCase(hexStr);
         }
         figma.ui.postMessage({ type: 'WIZARD_BASE_SAVED', name: bsSaveName, ok: true, shades: bsResultShades });
       }
@@ -7484,7 +7493,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
           variable = figma.variables.createVariable(`${fnPrefix}${shade}`, fnSaveCore, 'COLOR');
         }
         variable.setValueForMode(fnSaveModeId, colorVal);
-        fnResultShades[shade] = hexStr.toUpperCase();
+        fnResultShades[shade] = asciiUpperCase(hexStr);
       }
       figma.ui.postMessage({ type: 'WIZARD_FUNCTIONAL_SAVED', name: fnSaveName, ok: true, shades: fnResultShades });
     } catch (e: any) {
@@ -7979,7 +7988,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
           if (/^\d+$/.test(leaf)) {
             if (!numericBucket[parent]) numericBucket[parent] = {};
             numericBucket[parent][leaf] = v;
-          } else if (SEED_LEAVES.indexOf(leaf.toLowerCase()) >= 0) {
+          } else if (SEED_LEAVES.indexOf(asciiLowerCase(leaf)) >= 0) {
             // Prefer the first seed candidate we see per parent; don't overwrite.
             if (!seedCandidates[parent]) seedCandidates[parent] = v;
           }
@@ -8000,7 +8009,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
           // Split into lowercased segments. Leading generic folders like
           // "core-colours" don't hurt the matcher (they're just extra segments
           // that won't match any keyword).
-          const segs = trimmed.split('/').map(s => s.toLowerCase()).filter(Boolean);
+          const segs = trimmed.split('/').map(s => asciiLowerCase(s)).filter(Boolean);
           const leafLower = segs[segs.length - 1] || '';
           folderIndex.push({ prefix: parent, shadeMap, segments: segs, leaf: leafLower });
         }
@@ -8022,8 +8031,8 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
         excludeSegments: string[] = [],
         excludePrefixes: Set<string> = new Set(),
       ): FolderEntry | null {
-        const reqLower = requireAll.map(s => s.toLowerCase());
-        const excLower = excludeSegments.map(s => s.toLowerCase());
+        const reqLower = requireAll.map(s => asciiLowerCase(s));
+        const excLower = excludeSegments.map(s => asciiLowerCase(s));
         let best: FolderEntry | null = null;
         let bestScore = -Infinity;
         for (const f of folderIndex) {
@@ -8043,8 +8052,8 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
         excludeSegments: string[] = [],
         excludePrefixes: Set<string> = new Set(),
       ): FolderEntry[] {
-        const reqLower = requireAll.map(s => s.toLowerCase());
-        const excLower = excludeSegments.map(s => s.toLowerCase());
+        const reqLower = requireAll.map(s => asciiLowerCase(s));
+        const excLower = excludeSegments.map(s => asciiLowerCase(s));
         return folderIndex.filter(f => {
           if (excludePrefixes.has(f.prefix)) return false;
           const hasAll = reqLower.every(kw => f.segments.some(seg => seg.indexOf(kw) >= 0));
@@ -8253,7 +8262,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
           // Final fallback: flat single variable whose leaf matches alias.
           const flat = hyCoreVars.find(v => {
             if (v.resolvedType !== 'COLOR') return false;
-            const leaf = v.name.slice(v.name.lastIndexOf('/') + 1).toLowerCase();
+            const leaf = asciiLowerCase(v.name.slice(v.name.lastIndexOf('/') + 1));
             return aliases.indexOf(leaf) >= 0;
           });
           if (flat) {
@@ -8665,13 +8674,13 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
       if (bpColl) {
         for (const v of allVars) {
           if (v.variableCollectionId !== bpColl.id) continue;
-          const lower = v.name.toLowerCase();
+          const lower = asciiLowerCase(v.name);
           if (!lower.includes('typography')) continue;
           const parts = v.name.split('/');
           if (parts.length < 3) continue;
           // folder = all segments except the leaf (e.g. `breakpoint/typography/display`)
           const folder = parts.slice(0, -1).join('/');
-          const styleLeaf = parts[parts.length - 2].toLowerCase(); // e.g. "display"
+          const styleLeaf = asciiLowerCase(parts[parts.length - 2]); // e.g. "display"
           if (!bpTypoByLeafFolder[styleLeaf]) bpTypoByLeafFolder[styleLeaf] = { folder, vars: [] };
           bpTypoByLeafFolder[styleLeaf].vars.push(v);
         }
@@ -8690,7 +8699,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
       }
 
       function normLeaf(s: string): string {
-        return s.toLowerCase().replace(/[\s_]+/g, '-');
+        return asciiLowerCase(s).replace(/[\s_]+/g, '-');
       }
 
       const result = await Promise.all(styles.map(async s => {
@@ -8908,7 +8917,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
         written = await wizardWritePaletteToCore(prefix, palette, seedHex);
       } else if (kind === 'secondary' && palette) {
         // Sanitise variantName (letters, digits, dash/underscore) — default to 'secondary'
-        const safeName = (variantName || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'secondary';
+        const safeName =asciiLowerCase( (variantName || '')).replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'secondary';
 
         // Mirror the Primary folder structure when the user's file already has
         // a nested brand layout (e.g. `core-colours/brand/Primary/brand-light/*`).
@@ -9006,7 +9015,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
       const lightFolders: FolderEntry[] = [];
       const darkFolders: FolderEntry[] = [];
       for (const parent of Object.keys(byFolder)) {
-        const pl = parent.toLowerCase();
+        const pl = asciiLowerCase(parent);
         const isLight = /brand-light|brand\/light|primary[-/].*light/.test(pl);
         const isDark = /brand-dark|brand\/dark|primary[-/].*dark/.test(pl);
         if (!isLight && !isDark) continue;
@@ -9047,7 +9056,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
         for (const sh of sortedShades) {
           const v = f.shadeVars[sh];
           const hex = await getVariableColorHex(v, cache);
-          if (hex) out.push({ shade: sh, hex: hex.toUpperCase(), v });
+          if (hex) out.push({ shade: sh, hex: asciiUpperCase(hex), v });
         }
         return out;
       }
@@ -9122,7 +9131,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
         return newVars[midIdx];
       }
       for (const sv of darkF.seedVars) {
-        const seedHex = (await getVariableColorHex(sv, cache) || '').toUpperCase();
+        const seedHex =asciiUpperCase( (await getVariableColorHex(sv, cache) || ''));
         const target = seedHex ? nearestNewVar(seedHex) : newVars[Math.floor(newVars.length / 2)];
         if (target) oldIdToNewVar[sv.id] = target;
       }

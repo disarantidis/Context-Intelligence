@@ -597,20 +597,20 @@ export class RuleEngine {
     if (variants && typeof variants === 'object') {
       // Try exact match
       if (placeholder in variants) {
-        return String(variants[placeholder]).toLowerCase();
+        return asciiLowerCase(String(variants[placeholder]));
       }
       
       // Try common variant names
       if ('Type' in variants) {
-        return String(variants['Type']).toLowerCase();
+        return asciiLowerCase(String(variants['Type']));
       }
       if ('State' in variants) {
-        return String(variants['State']).toLowerCase();
+        return asciiLowerCase(String(variants['State']));
       }
     }
 
     // Extract from node name
-    const name = context.node.name.toLowerCase();
+    const name = asciiLowerCase(context.node.name);
     if (name.includes('primary')) return 'primary';
     if (name.includes('secondary')) return 'secondary';
     if (name.includes('destructive')) return 'destructive';

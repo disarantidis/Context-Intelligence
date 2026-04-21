@@ -20,7 +20,7 @@ const STATE_EXTRACTION_PATTERNS = [
 ];
 
 function normalizeConfidence(raw: string): ExternalKnowledgeConfidence {
-  const s = raw.toLowerCase();
+  const s = asciiLowerCase(raw);
   if (s === 'high') return 'high';
   if (s === 'low') return 'low';
   return 'medium';
@@ -35,7 +35,7 @@ function extractKnownStates(content: string): string[] {
       const segment = match[1] ?? match[0];
       segment
         .split(/[\s,;/]+/)
-        .map(s => s.trim().toLowerCase())
+        .map(s => asciiLowerCase(s.trim()))
         .filter(s => s.length > 1 && s.length < 20)
         .forEach(s => found.add(s));
     }
@@ -44,7 +44,7 @@ function extractKnownStates(content: string): string[] {
 }
 
 function inferComponentType(title: string, tags: string[]): string | undefined {
-  const combined = `${title} ${tags.join(' ')}`.toLowerCase();
+  const combined = asciiLowerCase(`${title} ${tags.join(' ')}`);
   for (const keyword of COMPONENT_TYPE_KEYWORDS) {
     if (combined.includes(keyword)) return keyword;
   }
@@ -59,7 +59,7 @@ export class DSKnowledgeSeeder {
   inferComponentTypesFromScan(scan: ScanResult): string[] {
     const found = new Set<string>();
     for (const component of scan.components) {
-      const nameLower = component.name.toLowerCase();
+      const nameLower = asciiLowerCase(component.name);
       for (const keyword of COMPONENT_TYPE_KEYWORDS) {
         if (nameLower.includes(keyword)) found.add(keyword);
       }

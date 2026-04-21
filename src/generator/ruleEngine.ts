@@ -68,7 +68,7 @@ export function generateRuleBasedDescription(
   if (profile.totalBindings > 0) {
     const topNodeType = topEntry(profile.byNodeType);
     const topProperty = topEntry(profile.byProperty);
-    const nodeLabel = NODE_LABELS[topNodeType] || topNodeType.toLowerCase();
+    const nodeLabel = NODE_LABELS[topNodeType] || asciiLowerCase(topNodeType);
     const propLabel = PROPERTY_LABELS[topProperty] || topProperty;
 
     parts.push(

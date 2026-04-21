@@ -536,7 +536,7 @@ function generateVariableDescription(
   readable: string,
   collection: string,
 ): string {
-  const type = (signals.resolvedType || 'unknown').toUpperCase();
+  const type =asciiUpperCase( (signals.resolvedType || 'unknown'));
 
   // COLOR variables
   if (type === 'COLOR') {
@@ -580,7 +580,7 @@ function generateVariableDescription(
 // ── Heuristic helpers (name-based inference) ─────────────────────────────
 
 function inferColorRole(leafName: string): string {
-  const l = leafName.toLowerCase();
+  const l = asciiLowerCase(leafName);
   // ── Brand / core palette ────────────────────────────────────────────
   if (/primary/.test(l))    return 'the primary brand color used for key interactive elements';
   if (/secondary/.test(l))  return 'a secondary brand color for supporting visual elements';
@@ -617,7 +617,7 @@ function inferColorRole(leafName: string): string {
 }
 
 function inferColorUsage(leafName: string): string {
-  const l = leafName.toLowerCase();
+  const l = asciiLowerCase(leafName);
   if (/primary/.test(l))    return 'buttons, links, and primary interactive surfaces';
   if (/secondary/.test(l))  return 'secondary buttons, tags, and supporting surfaces';
   if (/error|danger/.test(l))   return 'error messages, destructive buttons, and alert banners';
@@ -643,7 +643,7 @@ function inferColorUsage(leafName: string): string {
 }
 
 function inferNumericRole(leafName: string): string {
-  const l = leafName.toLowerCase();
+  const l = asciiLowerCase(leafName);
   if (/spacing|space|gap/.test(l))    return 'spacing between elements (margin or gap)';
   if (/padding|inset/.test(l))        return 'internal padding within containers';
   if (/radius|corner/.test(l))        return 'border-radius for rounded corners';
@@ -681,7 +681,7 @@ export function classifyPurpose(signals: EntitySignals): PurposeCategory {
       return 'ui-component';
     case 'Component': {
       // Try to distinguish layout primitives from UI components
-      const n = signals.name.toLowerCase();
+      const n = asciiLowerCase(signals.name);
       if (/^(frame|section|container|wrapper|layout|grid|stack|row|col)/i.test(n)) {
         return 'layout-primitive';
       }
@@ -712,8 +712,8 @@ export function descriptionExplainsPurpose(
 ): boolean {
   if (!description || description.trim().length === 0) return false;
 
-  const desc = description.toLowerCase();
-  const leaf = (name.split('/').pop() || name).toLowerCase().replace(/[-_]/g, ' ');
+  const desc = asciiLowerCase(description);
+  const leaf =asciiLowerCase( (name.split('/').pop() || name)).replace(/[-_]/g, ' ');
 
   // If the description is essentially just the name, it's not purposeful
   if (desc.trim() === leaf.trim()) return false;

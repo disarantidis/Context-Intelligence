@@ -145,7 +145,7 @@ function hslToHex(h: number, s: number, l: number): string {
   else if (h < 300) { r = x;         b = c; }
   else              { r = c;         b = x; }
   const toH = (n: number) => Math.round((n + m) * 255).toString(16).padStart(2, '0');
-  return ('#' + toH(r) + toH(g) + toH(b)).toUpperCase();
+  return asciiUpperCase(('#' + toH(r) + toH(g) + toH(b)));
 }
 
 function hslToRGB(h: number, s: number, l: number): { r: number; g: number; b: number } {
@@ -272,7 +272,7 @@ function normalizeShadeHexOverrides(
     if (!SHADE_KEYS.has(k)) continue;
     const hex = typeof v === 'string' ? v.trim() : '';
     if (!/^#[0-9A-Fa-f]{6}$/i.test(hex)) continue;
-    out[k] = hex.toUpperCase();
+    out[k] = asciiUpperCase(hex);
   }
   return Object.keys(out).length ? out : undefined;
 }
@@ -292,7 +292,7 @@ async function writePaletteToCore(
     const v = await figma.variables.getVariableByIdAsync(varId);
     if (!v || v.resolvedType !== 'COLOR') continue;
 
-    const nameLower = v.name.toLowerCase();
+    const nameLower = asciiLowerCase(v.name);
     if (!nameFilter(nameLower)) continue;
 
     const shadeMatch = v.name.match(/\b(100|200|300|400|500|600|700|800|900)\b/);
@@ -343,15 +343,15 @@ export async function readFontFamiliesFromCore(
   if (found.length === 0) return {};
 
   const byExact = (canonical: string) =>
-    found.find(f => f.name.toLowerCase() === canonical.toLowerCase())?.value;
+    found.find(f => asciiLowerCase(f.name) === asciiLowerCase(canonical))?.value;
 
   const secondary = byExact(FONT_FAMILY_SLOT_SECONDARY);
 
   let primary = byExact(FONT_FAMILY_SLOT_PRIMARY);
   if (!primary) {
     for (const p of FONT_FAMILY_READ_PRIORITY) {
-      if (p.toLowerCase() === FONT_FAMILY_SLOT_SECONDARY.toLowerCase()) continue;
-      const hit = found.find(f => f.name.toLowerCase() === p.toLowerCase());
+      if (asciiLowerCase(p) === asciiLowerCase(FONT_FAMILY_SLOT_SECONDARY)) continue;
+      const hit = found.find(f => asciiLowerCase(f.name) === asciiLowerCase(p));
       if (hit) {
         primary = hit.value;
         break;
@@ -359,7 +359,7 @@ export async function readFontFamiliesFromCore(
     }
   }
   if (!primary) {
-    const rest = found.filter(f => f.name.toLowerCase() !== FONT_FAMILY_SLOT_SECONDARY.toLowerCase());
+    const rest = found.filter(f => asciiLowerCase(f.name) !== asciiLowerCase(FONT_FAMILY_SLOT_SECONDARY));
     rest.sort((a, b) => compareAsciiInsensitive(a.name, b.name));
     if (rest.length > 0) primary = rest[0].value;
   }
@@ -388,7 +388,7 @@ export async function writeFontFamilySlot(
   for (const varId of coreColl.variableIds) {
     const v = await figma.variables.getVariableByIdAsync(varId);
     if (!v || v.resolvedType !== 'STRING') continue;
-    if (v.name.toLowerCase() === name.toLowerCase()) {
+    if (asciiLowerCase(v.name) === asciiLowerCase(name)) {
       v.setValueForMode(defaultMode, trimmed);
       return 1;
     }
@@ -549,7 +549,7 @@ export async function detectFileArchitecture(): Promise<{
   remoteLibraries: Array<{ name: string; libraryName: string }>;
 }> {
   const pages = figma.root.children.map(page => ({ name: page.name, id: page.id, type: page.type }));
-  const pageNames = pages.map(p => p.name.toLowerCase());
+  const pageNames = pages.map(p => asciiLowerCase(p.name));
 
   const collections = await figma.variables.getLocalVariableCollectionsAsync();
   const collectionData = collections.map(c => ({

@@ -137,5 +137,5 @@ export function validateAll(map: SemanticMap): Record<string, ValidationMessage[
 }
 
 function normalise(hex: string): string {
-  return hex.trim().toUpperCase().replace(/^#/, '');
+  return asciiUpperCase(hex.trim()).replace(/^#/, '');
 }

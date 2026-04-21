@@ -260,7 +260,7 @@ export function buildReverseIndex(componentLibraryJSON: ComponentLibraryJSON): R
       const vv = usage.variantValues || {};
       if (vv['State'] && states.indexOf(vv['State']) === -1) states.push(vv['State']);
       if (vv['Disabled'] && states.indexOf('Disabled') === -1) states.push('Disabled');
-      const slotType = (usage.slot || '').toLowerCase().indexOf('icon') !== -1 ? 'icon' : 'frame';
+      const slotType =asciiLowerCase( (usage.slot || '')).indexOf('icon') !== -1 ? 'icon' : 'frame';
       if (slotTypes.indexOf(slotType) === -1) slotTypes.push(slotType);
     }
     entry.inferredStates = states;
@@ -285,12 +285,12 @@ export function computeAlignmentSignals(
     if (!signals.hasDescription) {
       descriptionUsageAlignment = 0.1;
     } else {
-      const desc = (variable.description || '').toLowerCase();
+      const desc =asciiLowerCase( (variable.description || ''));
       const descWords = desc.split(/\W+/).filter(w => w.length > 2);
 
       const usageContext: string[] = [];
-      reverseIndexEntry.usages.forEach(u => usageContext.push(u.component.toLowerCase()));
-      reverseIndexEntry.inferredStates.forEach(s => usageContext.push(s.toLowerCase()));
+      reverseIndexEntry.usages.forEach(u => usageContext.push(asciiLowerCase(u.component)));
+      reverseIndexEntry.inferredStates.forEach(s => usageContext.push(asciiLowerCase(s)));
 
       const usageWords = usageContext
         .join(' ')

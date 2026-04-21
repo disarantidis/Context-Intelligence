@@ -348,14 +348,14 @@ export class ContextEvaluator {
    */
   static matchDesignRules(name: string, rules: { pattern: string; meaning: string }[]): { meaning: string; count: number } | null {
     if (!rules || rules.length === 0) return null;
-    const lower = name.toLowerCase();
-    const segments = name.split('/').map(s => s.toLowerCase());
+    const lower = asciiLowerCase(name);
+    const segments = name.split('/').map(s => asciiLowerCase(s));
     let firstMeaning: string | null = null;
     let count = 0;
     for (const r of rules) {
       const p = (r.pattern || '').trim();
       if (!p) continue;
-      const pl = p.toLowerCase();
+      const pl = asciiLowerCase(p);
       const matches = lower.includes(pl) || lower.startsWith(pl) || segments.some(seg => seg === pl || seg.startsWith(pl));
       if (matches) {
         if (firstMeaning == null) firstMeaning = r.meaning || '';

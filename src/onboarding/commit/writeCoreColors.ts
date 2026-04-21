@@ -115,7 +115,7 @@ async function removeSecondaryArtifacts(core: VariableCollection): Promise<numbe
   // 2) Remove a stand-alone `.secondary` / `secondary` collection, if present.
   const collections = await figma.variables.getLocalVariableCollectionsAsync();
   for (const c of collections) {
-    const lc = c.name.toLowerCase();
+    const lc = asciiLowerCase(c.name);
     if (lc === '.secondary' || lc === 'secondary') {
       try { c.remove(); removed++; } catch { /* ignore */ }
     }
@@ -125,7 +125,7 @@ async function removeSecondaryArtifacts(core: VariableCollection): Promise<numbe
   //    and any COLOR variable whose name itself references secondary.
   const remaining = await figma.variables.getLocalVariableCollectionsAsync();
   for (const c of remaining) {
-    const lc = c.name.toLowerCase();
+    const lc = asciiLowerCase(c.name);
     const looksLikeScheme =
       lc === 'core brand scheme' ||
       lc === '.scheme' ||
@@ -158,7 +158,7 @@ function uniqueHexes(arr: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of arr) {
-    const h = String(raw).trim().toUpperCase();
+    const h = asciiUpperCase(String(raw).trim());
     if (!/^#[0-9A-F]{6}$/.test(h)) continue;
     if (!seen.has(h)) {
       seen.add(h);

@@ -44,8 +44,8 @@ export class RuleDeriver {
     // Build a set of all known states/tags from external knowledge for fast lookup
     const externalTerms = new Set<string>();
     for (const entry of externalKnowledge) {
-      entry.knownStates.forEach(s => externalTerms.add(s.toLowerCase()));
-      entry.tags.forEach(t => externalTerms.add(t.toLowerCase()));
+      entry.knownStates.forEach(s => externalTerms.add(asciiLowerCase(s)));
+      entry.tags.forEach(t => externalTerms.add(asciiLowerCase(t)));
     }
 
     const rules: DerivedRule[] = [];
@@ -57,7 +57,7 @@ export class RuleDeriver {
         : 0;
       if (baseConfidence < CONFIDENCE_THRESHOLD) continue;
 
-      const externallyValidated = externalTerms.has(pattern.value.toLowerCase());
+      const externallyValidated = externalTerms.has(asciiLowerCase(pattern.value));
       const confidence = externallyValidated
         ? Math.min(1.0, baseConfidence + EXTERNAL_VALIDATION_BOOST)
         : baseConfidence;
@@ -82,11 +82,11 @@ export class RuleDeriver {
     pattern: PatternEntry,
     externalKnowledge: ExternalKnowledgeEntry[]
   ): string {
-    const key = pattern.value.toLowerCase();
+    const key = asciiLowerCase(pattern.value);
 
     // Try to find a richer meaning from external knowledge state lists
     for (const entry of externalKnowledge) {
-      const match = entry.knownStates.find(s => s.toLowerCase() === key);
+      const match = entry.knownStates.find(s => asciiLowerCase(s) === key);
       if (match && entry.componentType) {
         return `${this.capitalize(match)} state (${entry.componentType})`;
       }
@@ -96,6 +96,6 @@ export class RuleDeriver {
   }
 
   private capitalize(s: string): string {
-    return s.charAt(0).toUpperCase() + s.slice(1);
+    return asciiUpperCase(s.charAt(0)) + s.slice(1);
   }
 }

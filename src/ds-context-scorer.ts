@@ -147,12 +147,12 @@ function buildPoint(
 /** Match entity name against Context Rules (pattern = substring or path segment). Used for design-derived context bonus. */
 function nameMatchesDesignRule(name: string, rules: DesignRule[]): boolean {
   if (!rules || rules.length === 0) return false;
-  const lower = name.toLowerCase();
-  const segments = name.split('/').map(s => s.toLowerCase());
+  const lower = asciiLowerCase(name);
+  const segments = name.split('/').map(s => asciiLowerCase(s));
   for (const r of rules) {
     const p = (r.pattern || '').trim();
     if (!p) continue;
-    const pl = p.toLowerCase();
+    const pl = asciiLowerCase(p);
     if (lower.includes(pl) || lower.startsWith(pl) || segments.some(seg => seg === pl || seg.startsWith(pl))) return true;
   }
   return false;
@@ -352,7 +352,7 @@ function scoreCollectionName(collections: DSCollection[]): ContextPointResult {
   else bd.push('+0 Default collection name(s) found ("Collection", "Collection 1", etc.)');
 
   // No duplicate names
-  const unique = new Set(names.map(n => n.trim().toLowerCase()));
+  const unique = new Set(names.map(n => asciiLowerCase(n.trim())));
   if (unique.size === names.length) { raw += 2; bd.push('+2 No duplicate collection names'); }
   else bd.push(`+0 ${names.length - unique.size} duplicate collection name(s)`);
 
@@ -520,7 +520,7 @@ function scoreStyleFolderStructure(styles: DSStyle[]): ContextPointResult {
   else bd.push(`+0 ${(folderPct * 100).toFixed(1)}% use folder grouping (<50%)`);
 
   // Folder names describe category
-  const folderNames = withFolder.map(s => s.name.split('/')[0].trim().toLowerCase());
+  const folderNames = withFolder.map(s => asciiLowerCase(s.name.split('/')[0].trim()));
   const uniqueFolders = [...new Set(folderNames)];
   const categoryPatterns = /^(typography|type|text|color|colours?|elevation|shadow|effect|grid|layout|spacing|border|radius|opacity|motion|icon|brand)/i;
   const categorized = uniqueFolders.filter(f => categoryPatterns.test(f));

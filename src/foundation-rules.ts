@@ -261,7 +261,7 @@ function check_30_mirror_sf02(
   if (!cbsColl) return violations;
 
   const findMode = (namePart: string) =>
-    cbsColl.modes.find(m => m.name.toLowerCase().includes(namePart.toLowerCase()));
+    cbsColl.modes.find(m => asciiLowerCase(m.name).includes(asciiLowerCase(namePart)));
 
   const neutralMode   = findMode('neutral');
   const invertedMode  = findMode('inverted');

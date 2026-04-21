@@ -122,14 +122,14 @@ export class SuggestionGenerator {
     // Extract from node name (e.g., "Button/Primary" -> type=primary)
     const nameParts = node.name.split('/');
     if (nameParts.length > 1) {
-      context.variant = nameParts[nameParts.length - 1].toLowerCase();
-      context.component = nameParts[0].toLowerCase();
+      context.variant = asciiLowerCase(nameParts[nameParts.length - 1]);
+      context.component = asciiLowerCase(nameParts[0]);
     }
 
     // Extract from variant properties
     if (node.type === 'COMPONENT' && 'variantProperties' in node && node.variantProperties) {
       for (const [key, value] of Object.entries(node.variantProperties)) {
-        context[key.toLowerCase()] = String(value).toLowerCase();
+        context[asciiLowerCase(key)] = asciiLowerCase(String(value));
       }
     }
 
@@ -142,7 +142,7 @@ export class SuggestionGenerator {
   private findMatchingOption(options: Record<string, any>, context: Record<string, string>): string {
     for (const [, value] of Object.entries(context)) {
       if (options[value]) return options[value];
-      const capitalized = value.charAt(0).toUpperCase() + value.slice(1);
+      const capitalized = asciiUpperCase(value.charAt(0)) + value.slice(1);
       if (options[capitalized]) return options[capitalized];
     }
     const firstKey = Object.keys(options)[0];
@@ -231,14 +231,14 @@ export class SuggestionGenerator {
     
     // Look up in variantDescriptions
     if (this.rulesConfig.variantDescriptions) {
-      const key = `${node.name.toLowerCase()}.${variantProperty.toLowerCase()}.${variantValue?.toLowerCase() || ''}`;
+      const key = `${asciiLowerCase(node.name)}.${asciiLowerCase(variantProperty)}.${(variantValue == null ? '' : asciiLowerCase(variantValue)) || ''}`;
       
       if (this.rulesConfig.variantDescriptions[key]) {
         return this.rulesConfig.variantDescriptions[key].description;
       }
 
       // Try without value
-      const keyWithoutValue = `${node.name.toLowerCase()}.${variantProperty.toLowerCase()}`;
+      const keyWithoutValue = `${asciiLowerCase(node.name)}.${asciiLowerCase(variantProperty)}`;
       if (this.rulesConfig.variantDescriptions[keyWithoutValue]) {
         return this.rulesConfig.variantDescriptions[keyWithoutValue].description;
       }
@@ -254,7 +254,7 @@ export class SuggestionGenerator {
   generateComponentDescription(node: SceneNode): string | null {
     // Look up in componentDescriptions
     if (this.rulesConfig.componentDescriptions) {
-      const key = node.name.toLowerCase().replace('/', '.');
+      const key = asciiLowerCase(node.name).replace('/', '.');
       
       if (this.rulesConfig.componentDescriptions[key]) {
         const desc = this.rulesConfig.componentDescriptions[key];

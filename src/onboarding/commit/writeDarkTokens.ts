@@ -58,15 +58,15 @@ async function findOrCreateCoreForDarkHex(
   hex: string,
   palette: PaletteEntry[] | null,
 ): Promise<Variable | null> {
-  const want = hex.trim().toUpperCase();
+  const want = asciiUpperCase(hex.trim());
   if (palette) {
     for (const entry of palette) {
-      if (entry.hex.toUpperCase() === want) {
+      if (asciiUpperCase(entry.hex) === want) {
         return findVariableByName(core, `brand/${entry.shadeName}`);
       }
     }
   }
-  const name = 'dark-custom/' + want.replace(/^#/, '').toLowerCase();
+  const name = 'dark-custom/' + asciiLowerCase(want.replace(/^#/, ''));
   const { variable } = await upsertVariable(core, name, 'COLOR');
   await setColorAllModes(variable, core, want);
   return variable;

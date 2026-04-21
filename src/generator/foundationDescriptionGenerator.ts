@@ -529,7 +529,7 @@ export function validateDescription(
   // S1 must not contain the token name or collection name
   const s1 = sentences[0] ?? '';
   const tokenLeaf = variable.name.split('/').pop() ?? '';
-  if (s1.toLowerCase().includes(tokenLeaf.toLowerCase())) {
+  if (asciiLowerCase(s1).includes(asciiLowerCase(tokenLeaf))) {
     errors.push(`S1 contains token name fragment "${tokenLeaf}".`);
   }
 
@@ -558,7 +558,7 @@ export function validateDescription(
     'focus', 'ring', 'outline', 'fill', 'stroke', 'shadow', 'overlay', 'header',
     'navigation', 'toggle', 'avatar', 'lozenge', 'tappable', 'control',
   ];
-  const lastSentences = sentences.slice(-2).join(' ').toLowerCase();
+  const lastSentences = asciiLowerCase(sentences.slice(-2).join(' '));
   const hasUITerm = uiTerms.some(t => lastSentences.includes(t));
   if (!hasUITerm) errors.push('S4 has no concrete UI element name.');
 

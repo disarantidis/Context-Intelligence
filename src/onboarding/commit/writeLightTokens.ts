@@ -73,12 +73,12 @@ async function findCoreVariableForHex(
   hex: string,
   palette: PaletteEntry[] | null,
 ): Promise<Variable | null> {
-  const want = hex.trim().toUpperCase();
+  const want = asciiUpperCase(hex.trim());
 
   // Prefer direct palette lookup (faster + deterministic).
   if (palette) {
     for (const entry of palette) {
-      if (entry.hex.toUpperCase() === want) {
+      if (asciiUpperCase(entry.hex) === want) {
         return findVariableByName(core, `brand/${entry.shadeName}`);
       }
     }
@@ -92,7 +92,7 @@ async function findCoreVariableForHex(
     if (!v || v.resolvedType !== 'COLOR') continue;
     const val = v.valuesByMode[modeId] as RGB | undefined;
     if (!val || typeof val !== 'object' || !('r' in val)) continue;
-    const vh = rgbToHex(val).toUpperCase();
+    const vh = asciiUpperCase(rgbToHex(val));
     if (vh === want) return v;
   }
   return null;

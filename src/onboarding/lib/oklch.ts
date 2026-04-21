@@ -41,14 +41,14 @@ export function normalizeHex(input: string): string | null {
   if (/^[0-9a-fA-F]{3}$/.test(s)) {
     return (
       '#' +
-      s
+      asciiUpperCase(s
         .split('')
         .map(c => c + c)
         .join('')
-        .toUpperCase()
+        )
     );
   }
-  if (/^[0-9a-fA-F]{6}$/.test(s)) return '#' + s.toUpperCase();
+  if (/^[0-9a-fA-F]{6}$/.test(s)) return '#' + asciiUpperCase(s);
   return null;
 }
 
@@ -67,7 +67,7 @@ export function rgbToHex(r: number, g: number, b: number): string {
     Math.max(0, Math.min(255, Math.round(v * 255)))
       .toString(16)
       .padStart(2, '0');
-  return ('#' + to(r) + to(g) + to(b)).toUpperCase();
+  return asciiUpperCase(('#' + to(r) + to(g) + to(b)));
 }
 
 // ── sRGB ⇄ linear RGB ────────────────────────────────────────────────────────

@@ -34,11 +34,11 @@ const BIND_FIELDS: VariableBindableTextField[] = [
 
 /** Normalize Figma style path: spaces around slashes, duplicate slashes (folder quirks). */
 function normalizeStylePathForMatch(styleName: string): string {
-  return styleName
+  return asciiLowerCase(styleName
     .replace(/\s*\/\s*/g, '/')
     .replace(/\/+/g, '/')
     .trim()
-    .toLowerCase();
+    );
 }
 
 /**
@@ -170,7 +170,7 @@ export function formatTypographicFloatDisplay(varName: string, n: number): strin
   }
   if (slot === 'paragraphSpacing' || slot === 'paragraphIndent') return `${n}px`;
   if (slot === 'letterSpacing') {
-    const full = varName.toLowerCase();
+    const full = asciiLowerCase(varName);
     if (full.includes('percent') || full.includes('%')) return `${n}%`;
     const abs = Math.abs(n);
     if (abs <= 12 && Math.abs(n - Math.round(n * 2) / 2) < 1e-6) return String(n);
@@ -281,8 +281,8 @@ function variableStyleGroupPath(variableName: string): string | null {
 }
 
 function isFontSizeLikeTokenName(name: string): boolean {
-  const leaf = (name.split('/').pop() || name).toLowerCase();
-  return leaf.includes('font-size') || leaf.endsWith('-size') || /\bfont-size\b/.test(name.toLowerCase());
+  const leaf =asciiLowerCase( (name.split('/').pop() || name));
+  return leaf.includes('font-size') || leaf.endsWith('-size') || /\bfont-size\b/.test(asciiLowerCase(name));
 }
 
 function parsePxFromResolvedDisplay(s: string | undefined): number | null {
@@ -345,9 +345,9 @@ function parentFolderPathForVariableName(name: string): string {
  * Uses path segments so `…/weight/400` still classifies as fontWeight.
  */
 function leafSemanticKey(name: string): string {
-  const full = name.toLowerCase();
-  const parts = name.split('/').map(p => p.toLowerCase());
-  const leaf = (parts[parts.length - 1] || '').toLowerCase();
+  const full = asciiLowerCase(name);
+  const parts = name.split('/').map(p => asciiLowerCase(p));
+  const leaf =asciiLowerCase( (parts[parts.length - 1] || ''));
   const seg = (re: RegExp) => parts.some(p => re.test(p));
   if (full.includes('font-family') || seg(/^family$/) || seg(/font-family/)) return 'fontFamily';
   if (full.includes('font-weight') || seg(/^weight$/) || seg(/font-weight/) || /\/weight\//.test(full))
@@ -403,7 +403,7 @@ function findCoreLineHeightsParentPath(allVars: Variable[], coreCollId: string):
   let best: string | null = null;
   let bestScore = -1;
   for (const [p, list] of byParent) {
-    const pl = p.toLowerCase();
+    const pl = asciiLowerCase(p);
     let score = list.length;
     if (pl.includes('line-heights')) score += 1000;
     else if (pl.includes('line-height')) score += 100;
@@ -599,7 +599,7 @@ export async function getBreakpointTypographyTokenOptions(): Promise<TypographyT
   const candidates: Variable[] = [];
   for (const v of all) {
     if (v.variableCollectionId !== bp.id) continue;
-    const lower = v.name.toLowerCase();
+    const lower = asciiLowerCase(v.name);
     const onTypoPath =
       lower.includes('typography') || variableStyleGroupPath(v.name) !== null;
     if (!onTypoPath) continue;

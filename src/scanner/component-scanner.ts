@@ -73,8 +73,8 @@ export function categorize(entry: {
   // Rule 1: dot-prefix = internal sub-component
   if (entry.isInternal) return 'sub_components';
 
-  const n = entry.displayName.toLowerCase();
-  const props = new Set(entry.variantProps.map((p) => p.key.toLowerCase()));
+  const n = asciiLowerCase(entry.displayName);
+  const props = new Set(entry.variantProps.map((p) => asciiLowerCase(p.key)));
 
   // Rule 2: Overlays — first to catch "bottom sheet" / "flyout"
   if (

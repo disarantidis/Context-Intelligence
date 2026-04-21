@@ -145,7 +145,7 @@ const BREAKPOINT_NAMES = [
  */
 function validateHierarchy(input: TokenInput): NamingViolation[] {
   const violations: NamingViolation[] = [];
-  const collLower = input.collectionName.toLowerCase().trim();
+  const collLower = asciiLowerCase(input.collectionName).trim();
   const segments = input.name.split('/').map(s => s.trim());
 
   // Detect which tier this collection belongs to
@@ -185,7 +185,7 @@ function validateHierarchy(input: TokenInput): NamingViolation[] {
 
     if (input.resolvedType === 'FLOAT') {
       // Core numeric: should include a dimension reference
-      const nameL = input.name.toLowerCase();
+      const nameL = asciiLowerCase(input.name);
       if (!nameL.includes('dimension') && !nameL.includes('size') && !nameL.includes('spacing') &&
           !nameL.includes('radius') && !nameL.includes('opacity') && !nameL.includes('elevation') &&
           segments.length < 2) {
@@ -204,7 +204,7 @@ function validateHierarchy(input: TokenInput): NamingViolation[] {
   // Semantic tokens: must be named by function
   if (tier === 'semantic') {
     if (input.resolvedType === 'COLOR') {
-      const firstSeg = segments[0].toLowerCase();
+      const firstSeg = asciiLowerCase(segments[0]);
       const hasFunctionalRoot = SEMANTIC_COLOR_CATEGORIES.some(cat =>
         firstSeg.includes(cat)
       ) || FUNCTIONAL_COLOR_KEYWORDS.some(kw =>
@@ -245,8 +245,8 @@ function validateColorNaming(input: TokenInput): NamingViolation[] {
 
   const violations: NamingViolation[] = [];
   const segments = input.name.split('/').map(s => s.trim());
-  const nameLower = input.name.toLowerCase();
-  const tier = detectTier(input.collectionName.toLowerCase().trim());
+  const nameLower = asciiLowerCase(input.name);
+  const tier = detectTier(asciiLowerCase(input.collectionName).trim());
 
   // ── Scale validation for Core tier ──────────────────────────────────
   if (tier === 'core') {
@@ -274,14 +274,14 @@ function validateColorNaming(input: TokenInput): NamingViolation[] {
 
   // ── Tone modifier validation ────────────────────────────────────────
   if (tier === 'semantic') {
-    const leaf = segments[segments.length - 1].toLowerCase();
+    const leaf = asciiLowerCase(segments[segments.length - 1]);
     const hasToneModifier = TONE_MODIFIERS.some(tm => leaf.includes(tm));
-    const parentSeg = segments.length >= 2 ? segments[segments.length - 2].toLowerCase() : '';
+    const parentSeg = segments.length >= 2 ? asciiLowerCase(segments[segments.length - 2]) : '';
 
     // If a tone modifier is used, it should be the leaf, not mixed into a parent
     if (!hasToneModifier && segments.length >= 3) {
       for (let i = 0; i < segments.length - 1; i++) {
-        const segL = segments[i].toLowerCase();
+        const segL = asciiLowerCase(segments[i]);
         if (TONE_MODIFIERS.some(tm => segL === tm)) {
           violations.push({
             ruleId: 'color.misplaced-tone-modifier',
@@ -326,9 +326,9 @@ function validateColorNaming(input: TokenInput): NamingViolation[] {
  */
 function validateInteractionStates(input: TokenInput): NamingViolation[] {
   const violations: NamingViolation[] = [];
-  const nameLower = input.name.toLowerCase();
+  const nameLower = asciiLowerCase(input.name);
   const segments = input.name.split('/').map(s => s.trim());
-  const segmentsLower = segments.map(s => s.toLowerCase());
+  const segmentsLower = segments.map(s => asciiLowerCase(s));
 
   // Check if this token is an interactive state token
   const hasInteractiveMarker = segmentsLower.some(s =>
@@ -425,7 +425,7 @@ function validateModes(input: TokenInput): NamingViolation[] {
   // Mode name recognition disabled — custom mode names (e.g. foundation) are valid
 
   // Semantic/component tokens should ideally have multiple modes
-  const tier = detectTier(input.collectionName.toLowerCase().trim());
+  const tier = detectTier(asciiLowerCase(input.collectionName).trim());
   if ((tier === 'semantic' || tier === 'component') && input.resolvedType === 'COLOR' && input.modeCount < 2) {
     violations.push({
       ruleId: 'mode.single-mode-semantic',
@@ -446,8 +446,8 @@ function validateModes(input: TokenInput): NamingViolation[] {
 
 function validateTypographyAndLayout(input: TokenInput | StyleInput): NamingViolation[] {
   const violations: NamingViolation[] = [];
-  const nameLower = input.name.toLowerCase();
-  const segments = input.name.split('/').map(s => s.trim().toLowerCase());
+  const nameLower = asciiLowerCase(input.name);
+  const segments = input.name.split('/').map(s => asciiLowerCase(s.trim()));
 
   // ── Typography size descriptors ─────────────────────────────────────
   const isTextStyle = ('styleType' in input && input.styleType === 'TEXT') ||
@@ -608,7 +608,7 @@ export function validateStyle(input: StyleInput): NamingViolation[] {
  * Get a summary label for a token's hierarchy tier, for display.
  */
 export function getTokenTierLabel(collectionName: string): string {
-  const tier = detectTier(collectionName.toLowerCase().trim());
+  const tier = detectTier(asciiLowerCase(collectionName).trim());
   if (tier === 'core') return 'Core (Primitive)';
   if (tier === 'semantic') return 'Semantic';
   if (tier === 'component') return 'Component / Scheme';
