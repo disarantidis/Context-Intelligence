@@ -27,6 +27,7 @@ import {
   type ComponentLibraryJSON,
 } from './token-scorer';
 import { getDesktopBridge, startDesktopBridge } from './bridge';
+import { scanComponents as runComponentTaxonomyScan } from './scanner/component-scanner';
 import { runPipeline, rawInputFromAudits } from './ds-maturity-engine';
 import {
   scoreDSContextMaturity,
@@ -175,6 +176,8 @@ async function wizardRestoreSnapshot(snap: WizardSnapshot): Promise<void> {
   const currentById = new Map<string, Variable>();
   for (const v of [...colorVars, ...floatVars, ...stringVars]) currentById.set(v.id, v);
 
+  // Phase 1 — remove any variable that exists now but wasn't in the snapshot
+  // (these were created by the step we're undoing).
   const snapIds = new Set<string>(snap.changedVars.map(s => s.id));
   for (const v of [...colorVars, ...floatVars, ...stringVars]) {
     if (!snapIds.has(v.id)) {
@@ -182,14 +185,51 @@ async function wizardRestoreSnapshot(snap: WizardSnapshot): Promise<void> {
     }
   }
 
+  // Phase 2 — re-create variables that WERE in the snapshot but have since
+  // been removed (e.g. brand-dark shade + seed vars deleted by Combine).
+  // Build oldId → newVar so aliases restored in phase 3 can be rewritten
+  // onto the freshly-minted IDs.
+  const recreatedOldToNew: Record<string, Variable> = {};
+  const collections = await figma.variables.getLocalVariableCollectionsAsync();
+  const collById = new Map<string, VariableCollection>();
+  for (const c of collections) collById.set(c.id, c);
   for (const s of snap.changedVars) {
-    const v = currentById.get(s.id);
+    if (currentById.has(s.id)) continue;
+    const col = collById.get(s.collectionId);
+    if (!col) continue;
+    try {
+      const created = figma.variables.createVariable(s.name, col, s.resolvedType);
+      recreatedOldToNew[s.id] = created;
+      currentById.set(created.id, created);
+    } catch (_e) { /* ignore */ }
+  }
+
+  // Phase 3 — restore each snapshot entry's name, metadata and per-mode
+  // values. When a value is an alias pointing at a recreated source, rewrite
+  // it onto the new ID so the reference is live again (otherwise Figma would
+  // leave a broken "missing variable" alias).
+  function rewriteAliasTargets(val: VariableValue): VariableValue {
+    if (val && typeof val === 'object' && (val as { type?: string }).type === 'VARIABLE_ALIAS') {
+      const targetId = (val as { id?: string }).id;
+      if (targetId && recreatedOldToNew[targetId]) {
+        return figma.variables.createVariableAlias(recreatedOldToNew[targetId]);
+      }
+    }
+    return val;
+  }
+
+  for (const s of snap.changedVars) {
+    const v = currentById.get(s.id) || recreatedOldToNew[s.id];
     if (!v) continue;
+    try { if (v.name !== s.name) v.name = s.name; } catch (_e) { /* ignore */ }
     try { v.description = s.description; } catch (_e) { /* ignore */ }
     try { v.scopes = s.scopes; } catch (_e) { /* ignore */ }
     try { (v as unknown as { codeSyntax: Record<string, string> }).codeSyntax = s.codeSyntax; } catch (_e) { /* ignore */ }
     for (const modeId of Object.keys(s.valuesByMode)) {
-      try { v.setValueForMode(modeId, s.valuesByMode[modeId]); } catch (_e) { /* ignore */ }
+      try {
+        const val = rewriteAliasTargets(s.valuesByMode[modeId]);
+        v.setValueForMode(modeId, val);
+      } catch (_e) { /* ignore */ }
     }
   }
 }
@@ -1843,7 +1883,39 @@ figma.ui.onmessage = async (msg) => {
     }
     await scanSelection(config);
   }
-  
+
+  // -------------------------------------------------------------------------
+  // SCAN COMPONENTS (prefix-based taxonomy across all pages)
+  // -------------------------------------------------------------------------
+  else if (msg.type === 'SCAN_COMPONENTS') {
+    try {
+      const prefix = typeof msg.prefix === 'string' ? msg.prefix.trim() : '';
+      if (!prefix) {
+        figma.ui.postMessage({ type: 'SCAN_COMPONENTS_ERROR', error: 'Prefix is required' });
+        return;
+      }
+      const includeInternal = msg.includeInternal === true;
+      const result = await runComponentTaxonomyScan(
+        { prefix, includeInternal },
+        (current, total, pageName) => {
+          figma.ui.postMessage({
+            type: 'SCAN_COMPONENTS_PROGRESS',
+            current,
+            total,
+            pageName,
+          });
+        }
+      );
+      figma.ui.postMessage({ type: 'SCAN_COMPONENTS_RESULT', result });
+    } catch (error) {
+      figma.ui.postMessage({
+        type: 'SCAN_COMPONENTS_ERROR',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
+
   // -------------------------------------------------------------------------
   // APPLY FIX
   // -------------------------------------------------------------------------
@@ -7842,6 +7914,449 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
     return;
   }
 
+  // ── WIZARD_HYDRATE_ONBOARDING_DRAFT ───────────────────────────────────────
+  // Reads existing file tokens (brand, secondary, neutral, functional, typography
+  // font families, semantic light/dark) and returns an OnboardingDraft shaped to
+  // drive the 13-step wizard in "Edit existing" mode with pre-filled values.
+  if (msg.type === 'WIZARD_HYDRATE_ONBOARDING_DRAFT') {
+    try {
+      const draft = onbEmptyDraft();
+
+      // 1) DS name + logo (from settings)
+      try {
+        const stored = await figma.clientStorage.getAsync(DS_SETTINGS_STORAGE_KEY);
+        const config = stored && typeof stored === 'object' ? stored as Record<string, unknown> : {};
+        const savedName = typeof config.name === 'string' ? config.name.trim() : '';
+        if (savedName) draft.name = savedName;
+      } catch (_) { /* ignore */ }
+      try {
+        const logo = await figma.clientStorage.getAsync(DS_LOGO_PNG_STORAGE_KEY);
+        if (typeof logo === 'string' && logo) draft.logoUrl = logo;
+      } catch (_) { /* ignore */ }
+
+      const hyColls = await figma.variables.getLocalVariableCollectionsAsync();
+      const hyModeNameMap = new Map<string, string>();
+      for (const c of hyColls) {
+        for (const m of c.modes) hyModeNameMap.set(m.modeId, m.name);
+      }
+      // Locate the primitives collection. First try exact `.core` / `core`, then
+      // any collection whose name contains "core" (case-insensitive). This
+      // matches files where the collection is named e.g. ".Core", "Core",
+      // "core-tokens", etc.
+      let hyCore = hyColls.find(c => c.name === '.core') ??
+                   hyColls.find(c => c.name === 'core') ?? null;
+      if (!hyCore) {
+        hyCore = hyColls.find(c => /core/i.test(c.name)) ?? null;
+      }
+      const hyAllVars = await figma.variables.getLocalVariablesAsync();
+      const hyCoreVars = hyCore ? hyAllVars.filter(v => v.variableCollectionId === hyCore.id) : [];
+
+      // Build PaletteEntry[] helper
+      const SHADE_NAMES = ['50','100','200','300','400','500','600','700','800','900'];
+      const shadeToIndex: Record<string, number> = {};
+      SHADE_NAMES.forEach((n, i) => { shadeToIndex[n] = i; });
+
+      async function readShadePalette(prefix: string): Promise<{ entries: import('./onboarding/state/types').PaletteEntry[] | null; shadeMap: Record<string,string> }> {
+        if (!hyCore) return { entries: null, shadeMap: {} };
+        const matching = hyCoreVars.filter(v => v.resolvedType === 'COLOR' && v.name.startsWith(prefix));
+        if (matching.length === 0) return { entries: null, shadeMap: {} };
+        const shadeMap: Record<string, string> = {};
+        for (const v of matching) {
+          const rest = v.name.slice(prefix.length);
+          if (!/^\d+$/.test(rest)) continue;
+          const hex = await getVariableColorHex(v, undefined, undefined, hyModeNameMap);
+          if (hex && shadeToIndex[rest] !== undefined) shadeMap[rest] = hex;
+        }
+        const keys = Object.keys(shadeMap);
+        if (keys.length === 0) return { entries: null, shadeMap: {} };
+        const entries: import('./onboarding/state/types').PaletteEntry[] = SHADE_NAMES.map((n, i) => ({
+          index: i,
+          shadeName: n,
+          hex: shadeMap[n] || '',
+          source: shadeMap[n] ? 'input' : 'filled',
+        }));
+        return { entries, shadeMap };
+      }
+
+      // ─────────────────────────────────────────────────────────────────────
+      // Build an index of every `core-colours/**/<parent>/` whose direct
+      // children are numeric shade COLOR variables. Covers any nesting depth,
+      // e.g. `core-colours/brand/Primary/brand-light/500` or
+      // `core-colours/functional/destructive/destructive-light/500`.
+      //
+      // Each entry carries the folder path, the shade→hex map, and the
+      // lowercased path segments (everything after `core-colours/`) so callers
+      // can match by keyword at any level.
+      // ─────────────────────────────────────────────────────────────────────
+      type FolderEntry = {
+        prefix: string;
+        shadeMap: Record<string, string>;
+        segments: string[];       // lowercased, after `core-colours/`
+        leaf: string;             // lowercased leaf segment
+      };
+      const folderIndex: FolderEntry[] = [];
+      if (hyCore) {
+        // Bucket tokens by parent path. Numeric leaves (100..900) go into the
+        // shade map; non-numeric leaves are kept as *seed candidates* so we
+        // can backfill a synthetic "500" for palettes that don't ship one
+        // (e.g. RADD's `brand-light/brand`, where the leaf token literally
+        // named "brand" is the 500-equivalent).
+        const SEED_LEAVES = ['brand', 'main', 'default', 'primary', 'base', 'seed', 'core'];
+        const numericBucket: Record<string, Record<string, Variable>> = {};
+        const seedCandidates: Record<string, Variable> = {};
+        for (const v of hyCoreVars) {
+          if (v.resolvedType !== 'COLOR') continue;
+          const slash = v.name.lastIndexOf('/');
+          if (slash < 0) continue;
+          const leaf = v.name.slice(slash + 1);
+          const parent = v.name.slice(0, slash + 1);
+          if (/^\d+$/.test(leaf)) {
+            if (!numericBucket[parent]) numericBucket[parent] = {};
+            numericBucket[parent][leaf] = v;
+          } else if (SEED_LEAVES.indexOf(leaf.toLowerCase()) >= 0) {
+            // Prefer the first seed candidate we see per parent; don't overwrite.
+            if (!seedCandidates[parent]) seedCandidates[parent] = v;
+          }
+        }
+        for (const parent of Object.keys(numericBucket)) {
+          const shadeMap: Record<string, string> = {};
+          for (const shade of Object.keys(numericBucket[parent])) {
+            const hex = await getVariableColorHex(numericBucket[parent][shade], undefined, undefined, hyModeNameMap);
+            if (hex) shadeMap[shade] = hex;
+          }
+          if (Object.keys(shadeMap).length === 0) continue;
+          // Backfill synthetic 500 from a sibling seed token, if missing.
+          if (!shadeMap['500'] && seedCandidates[parent]) {
+            const seedHex = await getVariableColorHex(seedCandidates[parent], undefined, undefined, hyModeNameMap);
+            if (seedHex) shadeMap['500'] = seedHex;
+          }
+          const trimmed = parent.replace(/\/$/, '');
+          // Split into lowercased segments. Leading generic folders like
+          // "core-colours" don't hurt the matcher (they're just extra segments
+          // that won't match any keyword).
+          const segs = trimmed.split('/').map(s => s.toLowerCase()).filter(Boolean);
+          const leafLower = segs[segs.length - 1] || '';
+          folderIndex.push({ prefix: parent, shadeMap, segments: segs, leaf: leafLower });
+        }
+      }
+
+      // Helpers that walk folderIndex. Each one returns the best-scoring match
+      // (or null). Scoring favours:
+      //   +4   every required keyword is satisfied
+      //   +2   leaf segment contains "light"   (pick light-mode palette)
+      //   -3   leaf segment contains "dark"    (avoid dark-mode palette here)
+      //   +1   shorter path (shallower = more canonical)
+      function scoreLeafLightness(leaf: string): number {
+        if (/(^|[-_])dark($|[-_])/.test(leaf) || leaf === 'dark') return -3;
+        if (/(^|[-_])light($|[-_])/.test(leaf) || leaf === 'light') return 2;
+        return 0;
+      }
+      function bestFolder(
+        requireAll: string[],
+        excludeSegments: string[] = [],
+        excludePrefixes: Set<string> = new Set(),
+      ): FolderEntry | null {
+        const reqLower = requireAll.map(s => s.toLowerCase());
+        const excLower = excludeSegments.map(s => s.toLowerCase());
+        let best: FolderEntry | null = null;
+        let bestScore = -Infinity;
+        for (const f of folderIndex) {
+          if (excludePrefixes.has(f.prefix)) continue;
+          // Every required keyword must appear as a substring of some segment.
+          const hasAll = reqLower.every(kw => f.segments.some(seg => seg.indexOf(kw) >= 0));
+          if (!hasAll) continue;
+          // Exclude folders that contain any of these segments (as substring).
+          if (excLower.length && excLower.some(kw => f.segments.some(seg => seg.indexOf(kw) >= 0))) continue;
+          const score = 4 + scoreLeafLightness(f.leaf) + (10 - f.segments.length); // shallower wins tiebreaks
+          if (score > bestScore) { bestScore = score; best = f; }
+        }
+        return best;
+      }
+      function foldersMatching(
+        requireAll: string[],
+        excludeSegments: string[] = [],
+        excludePrefixes: Set<string> = new Set(),
+      ): FolderEntry[] {
+        const reqLower = requireAll.map(s => s.toLowerCase());
+        const excLower = excludeSegments.map(s => s.toLowerCase());
+        return folderIndex.filter(f => {
+          if (excludePrefixes.has(f.prefix)) return false;
+          const hasAll = reqLower.every(kw => f.segments.some(seg => seg.indexOf(kw) >= 0));
+          if (!hasAll) return false;
+          if (excLower.length && excLower.some(kw => f.segments.some(seg => seg.indexOf(kw) >= 0))) return false;
+          return true;
+        });
+      }
+      function entriesFromShadeMap(shadeMap: Record<string, string>): import('./onboarding/state/types').PaletteEntry[] {
+        return SHADE_NAMES.map((n, i) => ({
+          index: i,
+          shadeName: n,
+          hex: shadeMap[n] || '',
+          source: (shadeMap[n] ? 'input' : 'filled') as 'input' | 'filled',
+        }));
+      }
+
+      // Tracks which folder paths we've already "consumed" for one role so the
+      // secondaryColors loop below doesn't re-pick the same palette.
+      const consumed = new Set<string>();
+
+      // 2) Brand Primary palette → draft.palette.primary
+      //    Several layouts are supported:
+      //      • leaf folder literally named "brand-light"  (user's layout here)
+      //      • leaf folder named "primary" / "light" inside a "brand" group
+      //      • flat `brand/` folder with direct numeric shades
+      //    Prefer light-mode leaves; claim the sibling dark palette too so it
+      //    doesn't leak into the additional-secondary sweep.
+      {
+        const match =
+          // Leaf literally "brand-light" (highest signal match)
+          folderIndex.find(f => f.leaf === 'brand-light' && !consumed.has(f.prefix)) ||
+          bestFolder(['brand', 'primary'], ['dark']) ||
+          bestFolder(['brand', 'light']) ||
+          bestFolder(['brand', 'primary']);
+        if (match) {
+          draft.palette.primary = entriesFromShadeMap(match.shadeMap);
+          consumed.add(match.prefix);
+        }
+        // Claim the dark counterpart if we can identify it.
+        const dark =
+          folderIndex.find(f => f.leaf === 'brand-dark' && !consumed.has(f.prefix)) ||
+          bestFolder(['brand', 'primary', 'dark']) ||
+          bestFolder(['brand', 'dark']);
+        if (dark && !consumed.has(dark.prefix)) {
+          // Stash dark palette for Step 1's dark widget.
+          (draft.palette as any).hasDarkVariant = true;
+          (draft.palette as any).primaryDark = entriesFromShadeMap(dark.shadeMap);
+          consumed.add(dark.prefix);
+        }
+        // Final fallback — old explicit prefixes.
+        if (!draft.palette.primary) {
+          for (const pfx of ['core-colours/brand/Primary/Primary/', 'core-colours/brand/Primary/', 'core-colours/brand/']) {
+            const { entries } = await readShadePalette(pfx);
+            if (entries && entries.some(e => e.hex)) {
+              draft.palette.primary = entries;
+              consumed.add(pfx);
+              break;
+            }
+          }
+        }
+      }
+
+      // 3) Brand Secondary palette → draft.palette.secondary
+      {
+        const match =
+          folderIndex.find(f => f.leaf === 'secondary-light' && !consumed.has(f.prefix)) ||
+          bestFolder(['brand', 'secondary'], ['dark']) ||
+          bestFolder(['brand', 'secondary']);
+        if (match) {
+          draft.palette.secondary = entriesFromShadeMap(match.shadeMap);
+          consumed.add(match.prefix);
+          const dark =
+            folderIndex.find(f => f.leaf === 'secondary-dark' && !consumed.has(f.prefix)) ||
+            bestFolder(['brand', 'secondary', 'dark']);
+          if (dark) consumed.add(dark.prefix);
+        } else {
+          for (const pfx of ['core-colours/brand/Secondary/Secondary/', 'core-colours/brand/Secondary/']) {
+            const { entries } = await readShadePalette(pfx);
+            if (entries && entries.some(e => e.hex)) {
+              draft.palette.secondary = entries;
+              consumed.add(pfx);
+              break;
+            }
+          }
+        }
+      }
+
+      // 3b) Additional secondary palettes → draft.shades.secondaryColors[*]
+      //     The "Secondary colors" wizard step supports multiple extra accent
+      //     palettes. Pull any `core-colours/**/secondary/**` folder that
+      //     hasn't been consumed above, grouping by parent-of-leaf folder name.
+      //     UI's secondary widget uses 9 shade names ['100'..'900'] — match
+      //     that format (not the 10-entry '50..900' used for primary/neutral)
+      //     so `secHexes2[k]` lines up with `secShadeNames2[k]` at render time.
+      const secColors: string[] = [];
+      const secColorsNames: Record<number, string> = {};
+      const secColorsShades: Record<number, string[]> = {};
+      const SEC_UI_SHADES = ['100','200','300','400','500','600','700','800','900'];
+      {
+        // Find all secondary folders (but not brand-secondary, which we already claimed).
+        const secMatches = foldersMatching(['secondary'], ['dark', 'brand'], consumed);
+        // Light-mode preferred, then unique by palette "name" (parent-of-leaf).
+        secMatches.sort((a, b) => (scoreLeafLightness(b.leaf) - scoreLeafLightness(a.leaf)));
+        const seenNames = new Set<string>();
+        for (const f of secMatches) {
+          // Derive the palette name from the closest non-generic segment
+          // (skip "secondary" and the light/dark leaf itself).
+          let name = '';
+          for (let i = f.segments.length - 1; i >= 0; i--) {
+            const s = f.segments[i];
+            if (s === 'secondary') continue;
+            if (/light|dark/.test(s)) continue;
+            name = s; break;
+          }
+          if (!name) name = f.leaf;
+          if (seenNames.has(name)) continue;
+          seenNames.add(name);
+          const seed = f.shadeMap['500'] || f.shadeMap['400'] || Object.values(f.shadeMap)[0] || '';
+          const idx = secColors.length;
+          secColors.push(seed);
+          secColorsNames[idx] = name;
+          secColorsShades[idx] = SEC_UI_SHADES.map(n => f.shadeMap[n] || '');
+          consumed.add(f.prefix);
+        }
+      }
+      (draft.shades as any).secondaryColors = secColors;
+      (draft.shades as any).secondaryColorsNames = secColorsNames;
+      (draft.shades as any).secondaryColorsShades = secColorsShades;
+      (draft.shades as any).hasSecondaryColors = secColors.length > 0;
+
+      // 4) Neutral palette → draft.shades.neutralShades (10 entries)
+      {
+        const keywords = ['neutral', 'neutrals', 'gray', 'grey'];
+        let match: FolderEntry | null = null;
+        for (const kw of keywords) {
+          match = bestFolder([kw], ['dark', 'brand']) || bestFolder([kw], ['brand']);
+          if (match) break;
+        }
+        if (match) {
+          draft.shades.neutralShades = SHADE_NAMES.map(n => match!.shadeMap[n] || '');
+          consumed.add(match.prefix);
+        } else {
+          for (const pfx of ['core-colours/neutral/', 'core-colours/neutrals/', 'core-colours/gray/', 'core-colours/grey/']) {
+            const { entries } = await readShadePalette(pfx);
+            if (entries && entries.some(e => e.hex)) {
+              draft.shades.neutralShades = entries.map(e => e.hex);
+              consumed.add(pfx);
+              break;
+            }
+          }
+        }
+      }
+
+      // 5) Functional colors → draft.shades.functional (500 seed) + full
+      //    10-entry shade array per key so Step 4 renders the populated widget.
+      //    Token layouts vary (e.g. `core-colours/functional/destructive/
+      //    destructive-light/500`) so we match by any segment containing an
+      //    alias keyword, preferring light-mode leaves.
+      const funcKeys: Array<keyof import('./onboarding/state/types').FunctionalColors> =
+        ['destructive', 'warning', 'success', 'info'];
+      // Aliases cover BOTH semantic names AND colour-name conventions — RADD
+      // 2.0 stores these as `functional/red|orange|green|blue/…` rather than
+      // `functional/destructive|warning|success|info/…`.
+      const funcAliases: Record<string, string[]> = {
+        destructive: ['destructive', 'error', 'danger', 'critical', 'negative', 'red', 'crimson', 'rose'],
+        warning:     ['warning', 'warn', 'caution', 'orange', 'amber', 'yellow'],
+        success:     ['success', 'positive', 'ok', 'good', 'confirm', 'green', 'emerald', 'lime'],
+        info:        ['info', 'information', 'informative', 'blue', 'cyan', 'sky', 'azure'],
+      };
+      const funcShadesOut: Record<string, string[]> = {};
+      for (const fk of funcKeys) {
+        const aliases = funcAliases[fk] || [fk];
+        let bestMatch: FolderEntry | null = null;
+        let bestScore = -Infinity;
+        for (const f of folderIndex) {
+          if (consumed.has(f.prefix)) continue;
+
+          // Must be anchored under a "functional" / "system" / "semantic" /
+          // "status" / "alert" container — OR have an alias keyword directly
+          // as a segment. This avoids false positives like `brand/success-story`.
+          const isInFunctionalGroup = f.segments.some(seg =>
+            seg === 'functional' || seg === 'system' || seg === 'semantic' ||
+            seg === 'status' || seg === 'alert' || seg === 'alerts' || seg === 'state' || seg === 'states');
+          const hasAliasSegment = aliases.some(kw =>
+            f.segments.some(seg => seg === kw || seg.indexOf(kw) >= 0));
+          if (!isInFunctionalGroup && !hasAliasSegment) continue;
+          if (!hasAliasSegment) continue;   // every functional slot must have its keyword somewhere
+
+          // Score: prefer light leaves, exact-alias leaves, shallower paths,
+          // and folders inside a recognised functional container.
+          let score = scoreLeafLightness(f.leaf) + (10 - f.segments.length);
+          if (aliases.some(kw => f.leaf === kw)) score += 5;
+          if (aliases.some(kw => f.leaf.indexOf(kw) >= 0)) score += 3;
+          if (aliases.some(kw => f.segments.indexOf(kw) >= 0)) score += 2;
+          if (isInFunctionalGroup) score += 4;
+          if (score > bestScore) { bestScore = score; bestMatch = f; }
+        }
+        if (bestMatch) {
+          const shadeMap = bestMatch.shadeMap;
+          const seed = shadeMap['500'] || shadeMap['400'] || Object.values(shadeMap)[0];
+          if (seed) draft.shades.functional[fk] = seed;
+          funcShadesOut[fk] = SHADE_NAMES.map(n => shadeMap[n] || '');
+          consumed.add(bestMatch.prefix);
+        } else {
+          // Final fallback: flat single variable whose leaf matches alias.
+          const flat = hyCoreVars.find(v => {
+            if (v.resolvedType !== 'COLOR') return false;
+            const leaf = v.name.slice(v.name.lastIndexOf('/') + 1).toLowerCase();
+            return aliases.indexOf(leaf) >= 0;
+          });
+          if (flat) {
+            const hex = await getVariableColorHex(flat, undefined, undefined, hyModeNameMap);
+            if (hex) draft.shades.functional[fk] = hex;
+          }
+        }
+      }
+      (draft.shades as any).functionalShades = funcShadesOut;
+
+      // 6) Typography font families
+      if (hyCore) {
+        try {
+          const fonts = await readFontFamiliesFromCore(hyCore);
+          if (fonts.primary && fonts.primary.trim()) {
+            draft.typography.primary.family = fonts.primary.trim();
+          }
+          if (fonts.secondary && fonts.secondary.trim()) {
+            draft.typography.secondary = {
+              family: fonts.secondary.trim(),
+              weights: draft.typography.primary.weights.slice(),
+            };
+          }
+        } catch (_) { /* ignore typography read errors */ }
+      }
+
+      // 7) Mark as "edit mode" entry: currentStep=0 so user can walk through
+      //    every step. startedAt reflects now.
+      draft.currentStep = 0;
+      draft.startedAt = Date.now();
+
+      // Diagnostic trace: record which collection we hit, how many palette
+      // folders were indexed, and which path each draft slot landed on. The UI
+      // logs it to the console so we can see mismatches without a debugger.
+      const diagnostic = {
+        coreCollectionName: hyCore ? hyCore.name : null,
+        coreVarCount: hyCoreVars.length,
+        folderCount: folderIndex.length,
+        sampleFolders: folderIndex.slice(0, 40).map(f => f.prefix),
+        picked: {
+          primary: draft.palette.primary ? draft.palette.primary.map(e => e.hex).filter(Boolean).length : 0,
+          primaryDark: (draft.palette as any).primaryDark
+            ? ((draft.palette as any).primaryDark as Array<{ hex: string }>).map(e => e.hex).filter(Boolean).length
+            : 0,
+          secondary: draft.palette.secondary ? draft.palette.secondary.map(e => e.hex).filter(Boolean).length : 0,
+          neutralShades: draft.shades.neutralShades.filter(Boolean).length,
+          functional: Object.keys(draft.shades.functional).reduce((acc, k) => {
+            const v = (draft.shades.functional as any)[k];
+            if (v) acc[k] = v;
+            return acc;
+          }, {} as Record<string, string>),
+          functionalShadeCounts: Object.keys(funcShadesOut).reduce((acc, k) => {
+            acc[k] = (funcShadesOut[k] || []).filter(Boolean).length;
+            return acc;
+          }, {} as Record<string, number>),
+        },
+      };
+
+      figma.ui.postMessage({ type: 'ONBOARDING_DRAFT_HYDRATED', draft, diagnostic });
+    } catch (err) {
+      figma.ui.postMessage({
+        type: 'ONBOARDING_DRAFT_HYDRATED',
+        draft: onbEmptyDraft(),
+        error: String((err as Error)?.message ?? err),
+      });
+    }
+    return;
+  }
+
   // ── ONBOARDING_DETECT_SYSTEM ──────────────────────────────────────────────
   if (msg.type === 'ONBOARDING_DETECT_SYSTEM') {
     const cols = await figma.variables.getLocalVariableCollectionsAsync();
@@ -8481,6 +8996,210 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
       });
     } catch (err) {
       figma.ui.postMessage({ type: 'WIZARD_COMMIT_PALETTE_RESULT', error: String(err) });
+    }
+    return;
+  }
+
+  // ── WIZARD_COMBINE_BRAND_PALETTES ─────────────────────────────────────────
+  // Merge separate brand-light + brand-dark folders in `.core` into a single
+  // sequential brand-light palette. Steps:
+  //   1. Find every numeric-shade variable inside any `brand-light` and
+  //      `brand-dark` folder of `.core`.
+  //   2. Resolve each variable's hex, concatenate [light, dark], de-duplicate
+  //      by hex (case-insensitive) keeping the first occurrence's order.
+  //   3. Rename / rewrite the existing brand-light shade variables to the new
+  //      sequential scale (100, 200, 300, … N*100). Create extra variables for
+  //      positions beyond the original light count.
+  //   4. For every alias in the file that points at an old dark-folder token
+  //      (or a duplicate light token), re-point it at the canonical new
+  //      brand-light variable for the matching hex — this preserves semantic
+  //      token references (`bg-brand`, `text-brand`, etc.).
+  //   5. Delete the now-orphaned dark-folder shade + seed variables.
+  if (msg.type === 'WIZARD_COMBINE_BRAND_PALETTES') {
+    try {
+      const snap = await wizardTakeSnapshot('Combine brand light+dark', 'primary');
+      wizardHistory.push(snap);
+
+      const coreCol = await onbGetOrCreateCollection(ONB_CORE_COLLECTION_NAME);
+      const allColor = await figma.variables.getLocalVariablesAsync('COLOR');
+
+      // Bucket `.core` COLOR variables by parent folder.
+      interface FolderEntry { parent: string; shadeVars: Record<string, Variable>; seedVars: Variable[]; }
+      const byFolder: Record<string, { leaves: Record<string, Variable[]> }> = {};
+      for (const v of allColor) {
+        if (v.variableCollectionId !== coreCol.id) continue;
+        const parts = v.name.split('/');
+        if (parts.length < 2) continue;
+        const leaf = parts[parts.length - 1];
+        const parent = parts.slice(0, -1).join('/');
+        if (!byFolder[parent]) byFolder[parent] = { leaves: {} };
+        if (!byFolder[parent].leaves[leaf]) byFolder[parent].leaves[leaf] = [];
+        byFolder[parent].leaves[leaf].push(v);
+      }
+
+      const lightFolders: FolderEntry[] = [];
+      const darkFolders: FolderEntry[] = [];
+      for (const parent of Object.keys(byFolder)) {
+        const pl = parent.toLowerCase();
+        const isLight = /brand-light|brand\/light|primary[-/].*light/.test(pl);
+        const isDark = /brand-dark|brand\/dark|primary[-/].*dark/.test(pl);
+        if (!isLight && !isDark) continue;
+        const shadeVars: Record<string, Variable> = {};
+        const seedVars: Variable[] = [];
+        for (const leaf of Object.keys(byFolder[parent].leaves)) {
+          const vs = byFolder[parent].leaves[leaf];
+          for (const v of vs) {
+            if (/^\d+$/.test(leaf)) shadeVars[leaf] = v;
+            else seedVars.push(v);
+          }
+        }
+        if (Object.keys(shadeVars).length === 0) continue;
+        (isDark ? darkFolders : lightFolders).push({ parent, shadeVars, seedVars });
+      }
+
+      if (lightFolders.length === 0 || darkFolders.length === 0) {
+        figma.ui.postMessage({
+          type: 'WIZARD_COMBINE_BRAND_PALETTES_RESULT',
+          error: 'Could not find both brand-light and brand-dark folders in .core.',
+        });
+        return;
+      }
+
+      // Target the first matched pair. (RADD layout only has one of each.)
+      const lightF = lightFolders[0];
+      const darkF = darkFolders[0];
+
+      // Resolve hexes in numeric-shade order (100 → 900).
+      const cache = new Map<string, string | undefined>();
+      async function resolveFolder(f: FolderEntry): Promise<Array<{ shade: string; hex: string; v: Variable }>> {
+        const sortedShades = Object.keys(f.shadeVars)
+          .map(n => parseInt(n, 10))
+          .filter(n => !isNaN(n))
+          .sort((a, b) => a - b)
+          .map(String);
+        const out: Array<{ shade: string; hex: string; v: Variable }> = [];
+        for (const sh of sortedShades) {
+          const v = f.shadeVars[sh];
+          const hex = await getVariableColorHex(v, cache);
+          if (hex) out.push({ shade: sh, hex: hex.toUpperCase(), v });
+        }
+        return out;
+      }
+
+      const lightList = await resolveFolder(lightF);
+      const darkList = await resolveFolder(darkF);
+
+      // Concatenate and de-dupe by hex (first occurrence wins).
+      const combined: Array<{ hex: string }> = [];
+      const seenHex = new Set<string>();
+      for (const e of lightList) {
+        if (seenHex.has(e.hex)) continue;
+        seenHex.add(e.hex);
+        combined.push({ hex: e.hex });
+      }
+      for (const e of darkList) {
+        if (seenHex.has(e.hex)) continue;
+        seenHex.add(e.hex);
+        combined.push({ hex: e.hex });
+      }
+
+      // Rename existing light shade vars to a temp prefix first — prevents
+      // name collisions when we renumber upward (e.g. 900 → 1000 would clash
+      // if another var is still called 1000 nearby).
+      const tempPrefix = lightF.parent + '/__tmp_combine_';
+      for (let i = 0; i < lightList.length; i++) {
+        try { lightList[i].v.name = tempPrefix + i; } catch (_e) { /* ignore */ }
+      }
+
+      // Write the combined palette back into brand-light, 100-indexed.
+      const oldIdToNewVar: Record<string, Variable> = {};
+      const newVars: Variable[] = [];
+      let writtenCount = 0;
+      for (let i = 0; i < combined.length; i++) {
+        const newShade = String((i + 1) * 100);
+        const newName = lightF.parent + '/' + newShade;
+        let v: Variable;
+        if (i < lightList.length) {
+          v = lightList[i].v;
+          try { v.name = newName; } catch (_e) { /* ignore */ }
+          await onbSetColorAllModes(v, coreCol, combined[i].hex);
+        } else {
+          const up = await onbUpsertVariable(coreCol, newName, 'COLOR');
+          v = up.variable;
+          await onbSetColorAllModes(v, coreCol, combined[i].hex);
+        }
+        newVars.push(v);
+        writtenCount++;
+      }
+
+      // Build the alias-remap: every original light + dark var → canonical
+      // new brand-light var holding its hex.
+      const hexToNewVar: Record<string, Variable> = {};
+      for (let i = 0; i < combined.length; i++) hexToNewVar[combined[i].hex] = newVars[i];
+      for (const l of lightList) {
+        if (hexToNewVar[l.hex]) oldIdToNewVar[l.v.id] = hexToNewVar[l.hex];
+      }
+      for (const d of darkList) {
+        if (hexToNewVar[d.hex]) oldIdToNewVar[d.v.id] = hexToNewVar[d.hex];
+      }
+
+      // Also remap the dark folder's SEED variables (non-numeric leaves like
+      // `…/brand-dark/brand`). Semantic tokens sometimes alias the seed
+      // instead of a numeric shade — without this, `accent` / `text-link`
+      // etc. end up with broken references after the seed is deleted.
+      // Fall back to the 500-equivalent new var when the seed's hex doesn't
+      // match any combined entry (rare — seed usually IS the 500 tone).
+      function nearestNewVar(hex: string): Variable | undefined {
+        if (hexToNewVar[hex]) return hexToNewVar[hex];
+        // Mid-scale default when hex isn't in the combined list.
+        const midIdx = Math.min(newVars.length - 1, Math.floor(newVars.length / 2));
+        return newVars[midIdx];
+      }
+      for (const sv of darkF.seedVars) {
+        const seedHex = (await getVariableColorHex(sv, cache) || '').toUpperCase();
+        const target = seedHex ? nearestNewVar(seedHex) : newVars[Math.floor(newVars.length / 2)];
+        if (target) oldIdToNewVar[sv.id] = target;
+      }
+
+      // Walk every COLOR variable in the file; repoint aliases pointing at
+      // remapped sources (primarily semantic tokens that aliased brand-dark).
+      for (const v of allColor) {
+        const modes = Object.keys(v.valuesByMode || {});
+        for (const mid of modes) {
+          const val = v.valuesByMode[mid];
+          if (val && typeof val === 'object' && (val as { type?: string }).type === 'VARIABLE_ALIAS') {
+            const targetId = (val as { id?: string }).id;
+            if (targetId && oldIdToNewVar[targetId] && oldIdToNewVar[targetId].id !== v.id) {
+              try {
+                v.setValueForMode(mid, figma.variables.createVariableAlias(oldIdToNewVar[targetId]));
+              } catch (_e) { /* ignore */ }
+            }
+          }
+        }
+      }
+
+      // Remove the dark folder's shade + seed variables — they're now orphans
+      // (all references have been remapped into brand-light).
+      let removedCount = 0;
+      for (const d of darkList) {
+        try { d.v.remove(); removedCount++; } catch (_e) { /* ignore */ }
+      }
+      for (const sv of darkF.seedVars) {
+        try { sv.remove(); } catch (_e) { /* ignore */ }
+      }
+
+      figma.ui.postMessage({
+        type: 'WIZARD_COMBINE_BRAND_PALETTES_RESULT',
+        written: writtenCount,
+        removed: removedCount,
+        total: combined.length,
+        history: wizardHistory.map(s => ({ label: s.label, kind: s.kind, ts: s.ts })),
+      });
+    } catch (err) {
+      figma.ui.postMessage({
+        type: 'WIZARD_COMBINE_BRAND_PALETTES_RESULT',
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     return;
   }
