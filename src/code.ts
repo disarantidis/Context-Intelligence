@@ -28,6 +28,8 @@ import {
 } from './token-scorer';
 import { getDesktopBridge, startDesktopBridge } from './bridge';
 import { scanComponents as runComponentTaxonomyScan } from './scanner/component-scanner';
+import { aiOrchestrator } from './ai-orchestrator';
+import { storage } from './storage';
 import { runPipeline, rawInputFromAudits } from './ds-maturity-engine';
 import {
   scoreDSContextMaturity,
@@ -489,8 +491,7 @@ let includeContextRulesInScan = true;
 async function getBakedRules(): Promise<{ pattern: string; meaning: string }[]> {
   if (!includeContextRulesInScan) return [];
   if (cachedBakedRules) return cachedBakedRules;
-  const raw = await figma.clientStorage.getAsync('dsccBakedRules');
-  const list = raw ? JSON.parse(raw) : [];
+  const list = await storage.rules.getBaked<any[]>();
   cachedBakedRules = (Array.isArray(list) ? list : [])
     .map((r: { pattern?: string; meaning?: string }) => ({ pattern: r.pattern ?? '', meaning: r.meaning ?? '' }))
     .filter((r: { pattern: string; meaning: string }) => r.pattern || r.meaning);
@@ -678,26 +679,16 @@ loadRulesConfig().then(() => {
 });
 
 // Load rubric: try cache first (24 h TTL), then remote, then fall back to null (uses defaults)
-figma.clientStorage.getAsync('cachedRubric').then((cachedRubric: string | undefined) => {
-  return figma.clientStorage.getAsync('cachedRubricTs').then((cachedTs: string | undefined) => {
-    const now = Date.now();
-    const tsNum = cachedTs ? parseInt(cachedTs, 10) : 0;
-    if (cachedRubric && (now - tsNum) < 86400000) {
-      try {
-        currentRubric = JSON.parse(cachedRubric).weights as ScoringWeights;
-      } catch (_e) { /* leave null — scoreToken uses built-in defaults */ }
+// Delegated to Layer 3 (ai-orchestrator.fetchRubric) which shares the same cache key + TTL.
+aiOrchestrator.fetchRubric()
+  .then((payload) => {
+    if (payload && payload.weights) {
+      currentRubric = payload.weights as unknown as ScoringWeights;
     } else {
-      fetch('https://raw.githubusercontent.com/PLACEHOLDER/main/rubrics/token-rubric.json')
-        .then(r => r.json())
-        .then((data: { weights: ScoringWeights }) => {
-          currentRubric = data.weights;
-          figma.clientStorage.setAsync('cachedRubric', JSON.stringify(data)).catch(() => {});
-          figma.clientStorage.setAsync('cachedRubricTs', String(Date.now())).catch(() => {});
-        })
-        .catch(() => { currentRubric = null; });
+      currentRubric = null;
     }
-  });
-}).catch(() => { currentRubric = null; });
+  })
+  .catch(() => { currentRubric = null; });
 
 // ============================================================================
 // TOKEN EXPORT — helper functions (ported from JSON Exporter plugin)
@@ -2183,14 +2174,13 @@ figma.ui.onmessage = async (msg) => {
   // -------------------------------------------------------------------------
   else if (msg.type === 'SAVE_SCAN_SCORES') {
     try {
-      await figma.clientStorage.setAsync('dsccScanScores', JSON.stringify(msg.scores));
+      await storage.scans.saveScores(msg.scores);
     } catch (e) { /* non-fatal */ }
   }
   else if (msg.type === 'LOAD_SCAN_SCORES') {
     try {
-      const raw = await figma.clientStorage.getAsync('dsccScanScores');
-      const scores = raw ? JSON.parse(raw) : null;
-      figma.ui.postMessage({ type: 'SCAN_SCORES_LOADED', scores: scores });
+      const scores = await storage.scans.getScores();
+      figma.ui.postMessage({ type: 'SCAN_SCORES_LOADED', scores: scores ?? null });
     } catch (e) {
       figma.ui.postMessage({ type: 'SCAN_SCORES_LOADED', scores: null });
     }
@@ -2202,7 +2192,7 @@ figma.ui.onmessage = async (msg) => {
   else if (msg.type === 'LOAD_RULES_CONFIG') {
     try {
       const config = ensureRulesConfig(msg.config ?? {});
-      await figma.clientStorage.setAsync('rulesConfig', JSON.stringify(config));
+      await storage.rules.saveConfig(config);
       await loadRulesConfig();
       
       figma.notify('✅ Rules config loaded successfully!');
@@ -2228,7 +2218,7 @@ figma.ui.onmessage = async (msg) => {
   // -------------------------------------------------------------------------
   else if (msg.type === 'SAVE_CONNECTOR_CONFIG') {
     try {
-      await figma.clientStorage.setAsync('connectorConfig', JSON.stringify(msg.config));
+      await storage.config.saveConnector(msg.config);
       figma.ui.postMessage({ type: 'CONNECTOR_CONFIG_SAVED', success: true });
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -2241,9 +2231,8 @@ figma.ui.onmessage = async (msg) => {
   // -------------------------------------------------------------------------
   else if (msg.type === 'GET_CONNECTOR_CONFIG') {
     try {
-      const raw = await figma.clientStorage.getAsync('connectorConfig');
-      const config = raw ? JSON.parse(raw) : null;
-      figma.ui.postMessage({ type: 'CONNECTOR_CONFIG_LOADED', config });
+      const config = await storage.config.getConnector();
+      figma.ui.postMessage({ type: 'CONNECTOR_CONFIG_LOADED', config: config ?? null });
     } catch {
       figma.ui.postMessage({ type: 'CONNECTOR_CONFIG_LOADED', config: null });
     }
@@ -2255,7 +2244,7 @@ figma.ui.onmessage = async (msg) => {
   else if (msg.type === 'SAVE_DESCRIPTION_API_KEY') {
     try {
       const key = (msg as { apiKey?: string }).apiKey;
-      await figma.clientStorage.setAsync('descriptionApiKey', key ?? '');
+      await storage.config.saveDescriptionApiKey(key ?? '');
       figma.ui.postMessage({ type: 'DESCRIPTION_API_KEY_SAVED', success: true });
       if (key) figma.notify('✅ API key saved');
     } catch (e) {
@@ -2264,7 +2253,7 @@ figma.ui.onmessage = async (msg) => {
   }
   else if (msg.type === 'GET_DESCRIPTION_API_CONFIG') {
     try {
-      const apiKey = await figma.clientStorage.getAsync('descriptionApiKey');
+      const apiKey = await storage.config.getDescriptionApiKey();
       figma.ui.postMessage({
         type: 'DESCRIPTION_API_CONFIG_LOADED',
         apiKey: apiKey || '',
@@ -2285,8 +2274,8 @@ figma.ui.onmessage = async (msg) => {
       return;
     }
     try {
-      const rulesData = await figma.clientStorage.getAsync('rulesConfig');
-      const rulesConfig = rulesData ? ensureRulesConfig(JSON.parse(rulesData)) : EMPTY_RULES_CONFIG;
+      const rulesData = await storage.rules.getConfig();
+      const rulesConfig = rulesData ? ensureRulesConfig(rulesData) : EMPTY_RULES_CONFIG;
       const rules = rulesConfig.rules || [];
       const rulesSummary = JSON.stringify({ meta: rulesConfig.meta, ruleCount: rules.length, rules: rules.slice(0, 50) }, null, 0);
 
@@ -2440,8 +2429,8 @@ Output ONLY the description. No quotes, no preamble.`
   // -------------------------------------------------------------------------
   else if (msg.type === 'RESET_RULES_DEFAULT') {
     try {
-      await figma.clientStorage.deleteAsync('rulesConfig');
-      await figma.clientStorage.deleteAsync('connectorConfig');
+      await storage.rules.clearConfig();
+      await storage.config.clearConnector();
       await loadRulesConfig();
       figma.notify('✅ Rules reset to defaults');
       figma.ui.postMessage({ type: 'RULES_RESET', success: true });
@@ -2456,7 +2445,7 @@ Output ONLY the description. No quotes, no preamble.`
   // -------------------------------------------------------------------------
   else if (msg.type === 'SAVE_MCP_CONFIG') {
     try {
-      await figma.clientStorage.setAsync('mcpConfig', JSON.stringify(msg.config));
+      await storage.config.saveMcp(msg.config);
       figma.ui.postMessage({ type: 'MCP_CONFIG_SAVED', success: true });
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -2469,9 +2458,8 @@ Output ONLY the description. No quotes, no preamble.`
   // -------------------------------------------------------------------------
   else if (msg.type === 'GET_MCP_CONFIG') {
     try {
-      const raw = await figma.clientStorage.getAsync('mcpConfig');
-      const config = raw ? JSON.parse(raw) : null;
-      figma.ui.postMessage({ type: 'MCP_CONFIG_LOADED', config });
+      const config = await storage.config.getMcp();
+      figma.ui.postMessage({ type: 'MCP_CONFIG_LOADED', config: config ?? null });
     } catch {
       figma.ui.postMessage({ type: 'MCP_CONFIG_LOADED', config: null });
     }
@@ -2727,13 +2715,12 @@ Output ONLY the description. No quotes, no preamble.`
   // ── SAVE / LOAD ENRICHED RULES ───────────────────────────────────────────
   else if (msg.type === 'SAVE_ENRICHED_RULES') {
     try {
-      await figma.clientStorage.setAsync('dsccEnrichedRules', JSON.stringify((msg as any).rules ?? []));
+      await storage.rules.saveEnriched((msg as any).rules ?? []);
     } catch { /* swallow */ }
   }
   else if (msg.type === 'GET_ENRICHED_RULES') {
     try {
-      const raw = await figma.clientStorage.getAsync('dsccEnrichedRules');
-      const rules = raw ? JSON.parse(raw) : [];
+      const rules = (await storage.rules.getEnriched()) ?? [];
       figma.ui.postMessage({ type: 'ENRICHED_RULES_LOADED', rules });
     } catch {
       figma.ui.postMessage({ type: 'ENRICHED_RULES_LOADED', rules: [] });
@@ -2743,9 +2730,9 @@ Output ONLY the description. No quotes, no preamble.`
     try {
       const payload = msg as { rules?: unknown[]; ruleSummary?: { summaryText?: string; bySource?: Record<string, { pattern: string; meaning: string }[]>; usageGuidance?: string } };
       const rules = payload.rules ?? [];
-      await figma.clientStorage.setAsync('dsccBakedRules', JSON.stringify(rules));
+      await storage.rules.saveBaked(rules);
       if (payload.ruleSummary) {
-        await figma.clientStorage.setAsync('dsccBakedRuleSummary', JSON.stringify(payload.ruleSummary));
+        await storage.rules.saveBakedSummary(payload.ruleSummary);
       }
       cachedBakedRules = null;
       figma.ui.postMessage({
@@ -2764,10 +2751,8 @@ Output ONLY the description. No quotes, no preamble.`
   }
   else if (msg.type === 'GET_BAKED_RULES_AND_SUMMARY') {
     try {
-      const rulesRaw = await figma.clientStorage.getAsync('dsccBakedRules');
-      const summaryRaw = await figma.clientStorage.getAsync('dsccBakedRuleSummary');
-      const rules = rulesRaw ? JSON.parse(rulesRaw) : [];
-      const ruleSummary = summaryRaw ? JSON.parse(summaryRaw) : null;
+      const rules = (await storage.rules.getBaked()) ?? [];
+      const ruleSummary = (await storage.rules.getBakedSummary()) ?? null;
       figma.ui.postMessage({ type: 'BAKED_RULES_AND_SUMMARY_LOADED', rules, ruleSummary });
     } catch {
       figma.ui.postMessage({ type: 'BAKED_RULES_AND_SUMMARY_LOADED', rules: [], ruleSummary: null });
@@ -2775,13 +2760,12 @@ Output ONLY the description. No quotes, no preamble.`
   }
   else if (msg.type === 'SAVE_SAVED_SCANS') {
     try {
-      await figma.clientStorage.setAsync('dsccSavedScans', JSON.stringify((msg as any).scans ?? []));
+      await storage.scans.saveSaved((msg as any).scans ?? []);
     } catch { /* swallow */ }
   }
   else if (msg.type === 'GET_SAVED_SCANS') {
     try {
-      const raw = await figma.clientStorage.getAsync('dsccSavedScans');
-      const scans = raw ? JSON.parse(raw) : [];
+      const scans = (await storage.scans.getSaved()) ?? [];
       figma.ui.postMessage({ type: 'SAVED_SCANS_LOADED', scans });
     } catch {
       figma.ui.postMessage({ type: 'SAVED_SCANS_LOADED', scans: [] });
@@ -2789,12 +2773,12 @@ Output ONLY the description. No quotes, no preamble.`
   }
   else if (msg.type === 'SAVE_AI_MODEL') {
     try {
-      await figma.clientStorage.setAsync('dsccAIModel', (msg as any).model ?? 'claude-sonnet-4-6');
+      await storage.config.saveAiModel((msg as any).model ?? 'claude-sonnet-4-6');
     } catch { /* swallow */ }
   }
   else if (msg.type === 'GET_AI_MODEL') {
     try {
-      const model = await figma.clientStorage.getAsync('dsccAIModel');
+      const model = await storage.config.getAiModel();
       figma.ui.postMessage({ type: 'AI_MODEL_LOADED', model: model || 'claude-sonnet-4-6' });
     } catch {
       figma.ui.postMessage({ type: 'AI_MODEL_LOADED', model: 'claude-sonnet-4-6' });
@@ -3493,8 +3477,7 @@ Output ONLY the description. No quotes, no preamble.`
   }
 
   else if (msg.type === 'LOAD_UI_THEME') {
-    const UI_THEME_KEY = 'dscc-ui-theme';
-    figma.clientStorage.getAsync(UI_THEME_KEY).then((stored: unknown) => {
+    storage.settings.getTheme().then((stored) => {
       const theme = stored === 'light' || stored === 'dark' ? stored : 'dark';
       figma.ui.postMessage({ type: 'UI_THEME_LOADED', theme });
     }).catch(() => {
@@ -3503,9 +3486,8 @@ Output ONLY the description. No quotes, no preamble.`
   }
 
   else if (msg.type === 'SAVE_UI_THEME') {
-    const UI_THEME_KEY = 'dscc-ui-theme';
     const theme = (msg as any).theme === 'light' ? 'light' : 'dark';
-    figma.clientStorage.setAsync(UI_THEME_KEY, theme).catch(() => {});
+    storage.settings.saveTheme(theme).catch(() => {});
   }
 
   else if (msg.type === 'RELOAD_UI') {
@@ -3548,10 +3530,10 @@ Output ONLY the description. No quotes, no preamble.`
   // ── Scan History ─────────────────────────────────────────────────────────
   else if (msg.type === 'SAVE_SCAN_HISTORY') {
     const key = msg.historyType === 'token-export' ? 'jex-scan-history' : 'ctx-scan-history';
-    figma.clientStorage.getAsync(key).then((stored: any) => {
+    storage.scans.getHistory<any[]>(key).then((stored) => {
       const history: any[] = Array.isArray(stored) ? stored : [];
       history.unshift(msg.entry);
-      return figma.clientStorage.setAsync(key, history.slice(0, 8));
+      return storage.scans.saveHistory(key, history.slice(0, 8));
     }).then(() => {
       figma.ui.postMessage({ type: 'SCAN_HISTORY_SAVED', historyType: msg.historyType });
     }).catch(() => {});
@@ -3559,7 +3541,7 @@ Output ONLY the description. No quotes, no preamble.`
 
   else if (msg.type === 'LOAD_SCAN_HISTORY') {
     const key = msg.historyType === 'token-export' ? 'jex-scan-history' : 'ctx-scan-history';
-    figma.clientStorage.getAsync(key).then((stored: any) => {
+    storage.scans.getHistory<any[]>(key).then((stored) => {
       figma.ui.postMessage({ type: 'SCAN_HISTORY_LOADED', historyType: msg.historyType, history: Array.isArray(stored) ? stored : [] });
     }).catch(() => {
       figma.ui.postMessage({ type: 'SCAN_HISTORY_LOADED', historyType: msg.historyType, history: [] });
@@ -3568,18 +3550,15 @@ Output ONLY the description. No quotes, no preamble.`
 
   else if (msg.type === 'DELETE_SCAN_HISTORY_ENTRY') {
     const key = msg.historyType === 'token-export' ? 'jex-scan-history' : 'ctx-scan-history';
-    figma.clientStorage.getAsync(key).then((stored: any) => {
-      const history: any[] = Array.isArray(stored) ? stored : [];
-      return figma.clientStorage.setAsync(key, history.filter((e: any) => e.id !== msg.entryId));
-    }).then(() => {
+    storage.scans.deleteHistoryEntry(key, msg.entryId).then(() => {
       figma.ui.postMessage({ type: 'SCAN_HISTORY_DELETED', historyType: msg.historyType, entryId: msg.entryId });
     }).catch(() => {});
   }
 
   else if (msg.type === 'LOAD_DS_SETTINGS') {
     Promise.all([
-      figma.clientStorage.getAsync(DS_SETTINGS_STORAGE_KEY),
-      figma.clientStorage.getAsync(DS_LOGO_PNG_STORAGE_KEY),
+      storage.settings.getDS(),
+      storage.settings.getLogo(),
     ])
       .then(([stored, logoPng]) => {
         const config: Record<string, unknown> =
@@ -3602,24 +3581,23 @@ Output ONLY the description. No quotes, no preamble.`
     const raw = (msg as any).config || {};
     const config = { ...raw };
     delete (config as { logoPngDataUrl?: unknown }).logoPngDataUrl;
-    enqueueDsSettingsSaveStep(() => figma.clientStorage.setAsync(DS_SETTINGS_STORAGE_KEY, config));
+    enqueueDsSettingsSaveStep(() => storage.settings.saveDS(config));
   }
 
   else if (msg.type === 'SAVE_DS_LOGO_PNG') {
     const dataUrl = (msg as any).dataUrl;
     enqueueDsSettingsSaveStep(async () => {
       if (typeof dataUrl === 'string' && dataUrl.indexOf('data:image/png') === 0) {
-        await figma.clientStorage.setAsync(DS_LOGO_PNG_STORAGE_KEY, dataUrl);
+        await storage.settings.saveLogo(dataUrl);
       } else {
-        await figma.clientStorage.deleteAsync(DS_LOGO_PNG_STORAGE_KEY);
+        await storage.settings.clearLogo();
       }
       figma.ui.postMessage({ type: 'DS_SETTINGS_SAVED' });
     });
   }
 
   else if (msg.type === 'JSON_EXPORT_LOAD_GIT_SETTINGS') {
-    const GIT_CONFIG_KEY = 'json-exporter-git-config';
-    figma.clientStorage.getAsync(GIT_CONFIG_KEY).then((stored: any) => {
+    storage.integrations.getGit().then((stored: any) => {
       const config = stored && typeof stored === 'object' ? stored : {};
       figma.ui.postMessage({ type: 'JSON_EXPORT_GIT_SETTINGS_LOADED', config });
     }).catch(() => {
@@ -3628,8 +3606,7 @@ Output ONLY the description. No quotes, no preamble.`
   }
 
   else if (msg.type === 'JSON_EXPORT_SAVE_GIT_SETTINGS') {
-    const GIT_CONFIG_KEY = 'json-exporter-git-config';
-    figma.clientStorage.setAsync(GIT_CONFIG_KEY, msg.config || {}).then(() => {
+    storage.integrations.saveGit(msg.config || {}).then(() => {
       figma.ui.postMessage({ type: 'JSON_EXPORT_GIT_SETTINGS_SAVED' });
     }).catch((e: any) => {
       figma.ui.postMessage({ type: 'JSON_EXPORT_GIT_SETTINGS_SAVED', error: e.message });
@@ -3637,8 +3614,7 @@ Output ONLY the description. No quotes, no preamble.`
   }
 
   else if (msg.type === 'JSON_EXPORT_CLEAR_GIT_SETTINGS') {
-    const GIT_CONFIG_KEY = 'json-exporter-git-config';
-    figma.clientStorage.deleteAsync(GIT_CONFIG_KEY).then(() => {
+    storage.integrations.clearGit().then(() => {
       figma.ui.postMessage({ type: 'JSON_EXPORT_GIT_SETTINGS_CLEARED' });
     });
   }
@@ -3704,7 +3680,7 @@ Output ONLY the description. No quotes, no preamble.`
     };
     const scanPromise = selectionOnly ? _clScanSelected(opts) : _clScanAll(opts);
     scanPromise.then((data: any) => {
-      try { figma.clientStorage.setAsync('clj_lastScan', JSON.stringify(data)).catch(() => {}); } catch (_) {}
+      try { storage.tokenExport.saveLastScan(data); } catch (_) {}
       figma.ui.postMessage({ type: 'CL_SCAN_COMPLETE', data });
     }).catch((err: any) => {
       const msg2 = err && err.message ? err.message : String(err);
@@ -3778,13 +3754,11 @@ Output ONLY the description. No quotes, no preamble.`
 
   else if (msg.type === 'CL_RESTORE_OPTIONS') {
     Promise.all([
-      figma.clientStorage.getAsync('clj_prefix'),
-      figma.clientStorage.getAsync('clj_includeDeprecated'),
-      figma.clientStorage.getAsync('clj_lastScan'),
-      _clGetSavedScansMeta(),
-    ]).then(([prefix, includeDepr, lastScan, meta]: any[]) => {
-      let lastData = null;
-      try { if (lastScan) lastData = JSON.parse(lastScan); } catch (_) {}
+      storage.tokenExport.getPrefix(),
+      storage.tokenExport.getIncludeDeprecated(),
+      storage.tokenExport.getLastScan(),
+      storage.tokenExport.getSavedMeta(),
+    ]).then(([prefix, includeDepr, lastData, meta]) => {
       figma.ui.postMessage({ type: 'CL_OPTIONS_RESTORED', prefix: prefix || '', includeDeprecated: includeDepr !== false, lastScan: lastData, savedScansMeta: meta });
     }).catch(() => {
       figma.ui.postMessage({ type: 'CL_OPTIONS_RESTORED', prefix: '', includeDeprecated: true, lastScan: null, savedScansMeta: [] });
@@ -3797,10 +3771,6 @@ Output ONLY the description. No quotes, no preamble.`
 // ============================================================================
 
 let _clScanAbort = false;
-const CL_CHUNK_SIZE = 3500000;
-const CL_SAVE_SIZE_LIMIT = 4000000;
-const CL_META_KEY = 'clj_scanMeta';
-const CL_NAMES_KEY = 'clj_scanNames';
 
 const CL_SHAPE_PRIMITIVES: Record<string, boolean> = { RECTANGLE: true, ELLIPSE: true, VECTOR: true, LINE: true, BOOLEAN_OPERATION: true, STAR: true, POLYGON: true };
 const CL_LAYOUT_TYPES: Record<string, boolean> = { FRAME: true, COMPONENT: true, INSTANCE: true, COMPONENT_SET: true };
@@ -4135,67 +4105,19 @@ function _clScanSelected(opts: any): Promise<any> {
 }
 
 function _clSaveScan(name: string, data: any): Promise<void> {
-  const dataStr = JSON.stringify(data);
-  const saveP = dataStr.length <= CL_CHUNK_SIZE
-    ? figma.clientStorage.setAsync('clj_scan_' + name, data)
-    : (() => {
-        const chunks: string[] = [];
-        for (let i = 0; i < dataStr.length; i += CL_CHUNK_SIZE) chunks.push(dataStr.slice(i, i + CL_CHUNK_SIZE));
-        return figma.clientStorage.setAsync('clj_chunks_' + name, chunks.length).then(() =>
-          Promise.all(chunks.map((chunk: string, idx: number) => figma.clientStorage.setAsync('clj_scan_' + name + '_c' + idx, chunk)))
-        ).then(() => undefined);
-      })();
-  return saveP.then(() => figma.clientStorage.getAsync(CL_NAMES_KEY)).then((namesJson: any) => {
-    let names: string[] = [];
-    try { if (namesJson) names = JSON.parse(namesJson); if (!Array.isArray(names)) names = []; } catch (_) {}
-    if (!names.includes(name)) { names.push(name); names.sort(); }
-    return figma.clientStorage.setAsync(CL_NAMES_KEY, JSON.stringify(names));
-  }).then(() => figma.clientStorage.getAsync(CL_META_KEY)).then((metaJson: any) => {
-    let meta: any[] = [];
-    try { if (metaJson) meta = JSON.parse(metaJson); if (!Array.isArray(meta)) meta = []; } catch (_) {}
-    const entry = { name, timestamp: data?.timestamp || new Date().toISOString(), stats: data?.stats || {}, scanMode: data?.scanMode || 'all' };
-    const idx = meta.findIndex((m: any) => m.name === name);
-    if (idx >= 0) meta[idx] = entry; else meta.push(entry);
-    meta.sort((a: any, b: any) => (b.timestamp || '').localeCompare(a.timestamp || ''));
-    return figma.clientStorage.setAsync(CL_META_KEY, JSON.stringify(meta));
-  }).then(() => undefined);
+  return storage.tokenExport.saveScan(name, data);
 }
 
 function _clLoadScan(name: string): Promise<any> {
-  return figma.clientStorage.getAsync('clj_chunks_' + name).then((chunkCount: any) => {
-    if (chunkCount && chunkCount >= 1) {
-      const promises = [];
-      for (let i = 0; i < chunkCount; i++) promises.push(figma.clientStorage.getAsync('clj_scan_' + name + '_c' + i));
-      return Promise.all(promises).then((chunks: any[]) => JSON.parse(chunks.join('')));
-    }
-    return figma.clientStorage.getAsync('clj_scan_' + name).then((val: any) => typeof val === 'string' ? JSON.parse(val) : val);
-  });
+  return storage.tokenExport.loadScan(name);
 }
 
 function _clDeleteScan(name: string): Promise<void> {
-  return figma.clientStorage.getAsync('clj_chunks_' + name).then((chunkCount: any) => {
-    const dels = [figma.clientStorage.deleteAsync('clj_scan_' + name), figma.clientStorage.deleteAsync('clj_chunks_' + name)];
-    if (chunkCount && chunkCount >= 1) for (let i = 0; i < chunkCount; i++) dels.push(figma.clientStorage.deleteAsync('clj_scan_' + name + '_c' + i));
-    return Promise.all(dels);
-  }).then(() => figma.clientStorage.getAsync(CL_NAMES_KEY)).then((namesJson: any) => {
-    let names: string[] = [];
-    try { if (namesJson) names = JSON.parse(namesJson); if (!Array.isArray(names)) names = []; } catch (_) {}
-    names = names.filter((n: string) => n !== name);
-    return figma.clientStorage.setAsync(CL_NAMES_KEY, JSON.stringify(names));
-  }).then(() => figma.clientStorage.getAsync(CL_META_KEY)).then((metaJson: any) => {
-    let meta: any[] = [];
-    try { if (metaJson) meta = JSON.parse(metaJson); if (!Array.isArray(meta)) meta = []; } catch (_) {}
-    meta = meta.filter((m: any) => m.name !== name);
-    return figma.clientStorage.setAsync(CL_META_KEY, JSON.stringify(meta));
-  }).then(() => undefined);
+  return storage.tokenExport.deleteScan(name);
 }
 
 function _clGetSavedScansMeta(): Promise<any[]> {
-  return figma.clientStorage.getAsync(CL_META_KEY).then((metaJson: any) => {
-    let meta: any[] = [];
-    try { if (metaJson) meta = JSON.parse(metaJson); if (!Array.isArray(meta)) meta = []; } catch (_) {}
-    return meta;
-  }).catch(() => []);
+  return storage.tokenExport.getSavedMeta().catch(() => []);
 }
 
 // ============================================================================
@@ -6582,10 +6504,9 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
       // If the DB was just created, persist the new databaseId
       if (result.databaseId && syncConfig.notion) {
         syncConfig.notion.databaseId = result.databaseId;
-        const raw = await figma.clientStorage.getAsync('dsci_sync_config');
-        const saved = raw ? (JSON.parse(raw as string) as SyncConfig) : {};
+        const saved = (await storage.integrations.getSync<SyncConfig>()) || {};
         saved.notion = syncConfig.notion;
-        await figma.clientStorage.setAsync('dsci_sync_config', JSON.stringify(saved));
+        await storage.integrations.saveSync(saved);
       }
       figma.ui.postMessage({
         type: 'SYNC_TO_NOTION_COMPLETE',
@@ -6881,7 +6802,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
   // The UI can request the current file name at any time (e.g. to display in the header).
   // Also returns the saved DS display name (if any) so the wizard can show it.
   if (msg.type === 'WIZARD_GET_FILE_NAME') {
-    figma.clientStorage.getAsync(DS_SETTINGS_STORAGE_KEY).then((stored: unknown) => {
+    storage.settings.getDS().then((stored: unknown) => {
       const config = stored && typeof stored === 'object' ? stored as Record<string, unknown> : {};
       const savedName = typeof config.name === 'string' ? config.name.trim() : '';
       figma.ui.postMessage({ type: 'WIZARD_FILE_NAME', name: figma.root.name || '', savedName });
@@ -6895,10 +6816,10 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
   // Saves only the DS display name, merging into existing settings.
   if (msg.type === 'WIZARD_SAVE_DS_NAME') {
     const newName = String((msg as any).name || '').trim();
-    figma.clientStorage.getAsync(DS_SETTINGS_STORAGE_KEY).then((stored: unknown) => {
+    storage.settings.getDS().then((stored: unknown) => {
       const config: Record<string, unknown> = stored && typeof stored === 'object' ? { ...(stored as object) } : {};
       config.name = newName;
-      return figma.clientStorage.setAsync(DS_SETTINGS_STORAGE_KEY, config).then(() => config);
+      return storage.settings.saveDS(config).then(() => config);
     }).then((config: Record<string, unknown>) => {
       figma.ui.postMessage({ type: 'WIZARD_DS_NAME_SAVED', name: newName });
       // Also update DS_SETTINGS_LOADED so the main header reflects the new name
@@ -9231,8 +9152,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
 
   // ── GET_SYNC_CONFIG ───────────────────────────────────────────────────────
   if (msg.type === 'GET_SYNC_CONFIG') {
-    const raw = await figma.clientStorage.getAsync('dsci_sync_config');
-    const config = raw ? (JSON.parse(raw as string) as SyncConfig) : {};
+    const config = (await storage.integrations.getSync<SyncConfig>()) || {};
     // Seed default paths so the UI can pre-fill the form without manual typing
     if (!config.github) {
       config.github = {
