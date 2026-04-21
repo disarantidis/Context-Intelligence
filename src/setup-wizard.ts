@@ -9,6 +9,8 @@
  * Pure Figma-sandbox code — no DOM, no fetch.
  */
 
+import { compareAsciiInsensitive } from './string-compare';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -358,7 +360,7 @@ export async function readFontFamiliesFromCore(
   }
   if (!primary) {
     const rest = found.filter(f => f.name.toLowerCase() !== FONT_FAMILY_SLOT_SECONDARY.toLowerCase());
-    rest.sort((a, b) => a.name.localeCompare(b.name));
+    rest.sort((a, b) => compareAsciiInsensitive(a.name, b.name));
     if (rest.length > 0) primary = rest[0].value;
   }
 

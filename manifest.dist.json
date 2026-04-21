@@ -1,6 +1,6 @@
 {
   "name": "Design System Quality Auditor",
-  "id": "ds-context-intelligence-mcp",
+  "id": "1628408891026701328",
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",
@@ -12,6 +12,8 @@
       "https://api.openai.com",
       "https://generativelanguage.googleapis.com",
       "https://api.github.com",
+      "https://raw.githubusercontent.com",
+      "https://api.notion.com",
       "http://localhost",
       "http://localhost:5000",
       "ws://localhost",
@@ -26,12 +28,14 @@
       "ws://localhost:9231",
       "ws://localhost:9232"
     ],
-    "reasoning": "Connects to AI APIs (Anthropic, OpenAI, Google) for description generation, to GitHub for knowledge sync, and to a local MCP server via WebSocket for design system analysis.",
+    "reasoning": "AI APIs (Anthropic, OpenAI, Google), GitHub and raw GitHub for rubric sync, Notion for optional sync, localhost WebSockets for MCP bridge.",
     "devAllowedDomains": [
       "https://api.anthropic.com",
       "https://api.openai.com",
       "https://generativelanguage.googleapis.com",
       "https://api.github.com",
+      "https://raw.githubusercontent.com",
+      "https://api.notion.com",
       "http://localhost",
       "http://localhost:5000",
       "ws://localhost",

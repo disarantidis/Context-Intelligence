@@ -1,3 +1,4 @@
+import { compareAsciiInsensitive } from '../string-compare';
 import { KnowledgeBase } from './KnowledgeBase';
 import type { ScoreHistoryEntry } from './types';
 
@@ -33,13 +34,13 @@ export class ContextBuilder {
     const foundationScores = latestPerEntity(
       data.scoreHistory.filter(e => e.category === 'foundation')
     )
-      .sort((a, b) => b.scannedAt.localeCompare(a.scannedAt))
+      .sort((a, b) => compareAsciiInsensitive(b.scannedAt, a.scannedAt))
       .slice(0, 8);
 
     const componentScores = latestPerEntity(
       data.scoreHistory.filter(e => e.category === 'component')
     )
-      .sort((a, b) => b.scannedAt.localeCompare(a.scannedAt))
+      .sort((a, b) => compareAsciiInsensitive(b.scannedAt, a.scannedAt))
       .slice(0, 8);
 
     const positiveDescriptions = await this.kb.getPositiveDescriptions();

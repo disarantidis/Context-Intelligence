@@ -77,11 +77,28 @@ export interface DSMaturityResult {
 // Helpers
 // ============================================================================
 
-/** Regex matching most emoji ranges */
-const EMOJI_RE = /[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/u;
-
+/** True if string likely contains emoji — no \\u{…} / \\p RegExp (strict Figma plugin VMs). */
 function hasEmoji(s: string): boolean {
-  return EMOJI_RE.test(s);
+  if (!s) return false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    let cp = c;
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+      const d = s.charCodeAt(i + 1);
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        cp = (c - 0xd800) * 0x400 + (d - 0xdc00) + 0x10000;
+        i++;
+      }
+    }
+    if (cp >= 0x1f300 && cp <= 0x1faff) return true;
+    if (cp >= 0x2600 && cp <= 0x26ff) return true;
+    if (cp >= 0x2700 && cp <= 0x27bf) return true;
+    if (cp === 0x200d || cp === 0x20e3) return true;
+    if (cp >= 0xfe00 && cp <= 0xfe0f) return true;
+    if (cp >= 0x1f000 && cp <= 0x1f0ff) return true;
+    if (cp >= 0xe0020 && cp <= 0xe007f) return true;
+  }
+  return false;
 }
 
 function pct(count: number, total: number): number {

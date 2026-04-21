@@ -3,6 +3,7 @@
  * Figma Plugin for Design System Quality Checks
  */
 
+import { compareAsciiInsensitive } from './string-compare';
 import { ComponentAnalyzer } from './component-analyzer';
 import { SuggestionGenerator } from './suggestion-generator';
 import { FixApplier } from './fix-applier';
@@ -696,7 +697,11 @@ aiOrchestrator.fetchRubric()
 
 function _jex_stripIcons(name: string): string {
   if (!name) return name;
-  return name.replace(/\p{Extended_Pictographic}/gu, '').replace(/[\u{FE00}-\u{FE0F}]/gu, '').replace(/\s+/g, ' ').trim();
+  let s = name;
+  // No Unicode-property regex (\\p / u flag): some published Figma VMs lack full Unicode tables.
+  s = s.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '');
+  s = s.replace(/[\uFE00-\uFE0F]/g, '');
+  return s.replace(/\s+/g, ' ').trim();
 }
 
 function _jex_normalizeVariableName(name: string, collectionName: string): string {
@@ -4766,11 +4771,51 @@ function isVariableAliasValue(raw: unknown): boolean {
   return !!raw && typeof raw === 'object' && (raw as { type?: string }).type === 'VARIABLE_ALIAS';
 }
 
-const WIZ_PATH_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+/**
+ * Natural-order compare for one path segment: case-insensitive text + numeric chunks (2 < 10).
+ * Pure JS — safe when the host omits the standard i18n globals.
+ */
+function compareWizardPathSegment(ca: string, cb: string): number {
+  const a = ca || '';
+  const b = cb || '';
+  const re = /(\d+)|(\D+)/g;
+  const toksA: Array<{ kind: 'num'; n: number; raw: string } | { kind: 'str'; s: string }> = [];
+  const toksB: typeof toksA = [];
+  let m: RegExpExecArray | null;
+  re.lastIndex = 0;
+  while ((m = re.exec(a)) !== null) {
+    if (m[1] !== undefined) toksA.push({ kind: 'num', n: parseInt(m[1], 10), raw: m[1] });
+    else toksA.push({ kind: 'str', s: m[2].toLowerCase() });
+  }
+  re.lastIndex = 0;
+  while ((m = re.exec(b)) !== null) {
+    if (m[1] !== undefined) toksB.push({ kind: 'num', n: parseInt(m[1], 10), raw: m[1] });
+    else toksB.push({ kind: 'str', s: m[2].toLowerCase() });
+  }
+  const n = Math.max(toksA.length, toksB.length);
+  for (let i = 0; i < n; i++) {
+    const ta = toksA[i];
+    const tb = toksB[i];
+    if (ta === undefined) return -1;
+    if (tb === undefined) return 1;
+    if (ta.kind === 'num' && tb.kind === 'num') {
+      if (ta.n !== tb.n) return ta.n < tb.n ? -1 : 1;
+      const ld = ta.raw.length - tb.raw.length;
+      if (ld !== 0) return ld;
+    } else if (ta.kind === 'str' && tb.kind === 'str') {
+      if (ta.s !== tb.s) return ta.s < tb.s ? -1 : 1;
+    } else if (ta.kind === 'num' && tb.kind === 'str') {
+      return -1;
+    } else {
+      return 1;
+    }
+  }
+  return 0;
+}
 
 /**
  * Tie-break when two variables share no `variableIds` index: compare each `/` segment,
- * case-insensitive + numeric per segment.
+ * case-insensitive + numeric per segment (sandbox-safe).
  */
 function compareVariablePathName(a: string, b: string): number {
   const as = (a || '').split('/').filter(Boolean);
@@ -4781,7 +4826,7 @@ function compareVariablePathName(a: string, b: string): number {
     const cb = bs[i];
     if (ca === undefined) return -1;
     if (cb === undefined) return 1;
-    const c = WIZ_PATH_COLLATOR.compare(ca, cb);
+    const c = compareWizardPathSegment(ca, cb);
     if (c !== 0) return c;
   }
   return 0;
@@ -7264,7 +7309,7 @@ figma.ui.on('message', async (msg: { type: string; [key: string]: unknown }) => 
       baseStandalone.sort((a, b) => {
         const aNum = parseInt(a.name, 10);
         const bNum = parseInt(b.name, 10);
-        if (isNaN(aNum) && isNaN(bNum)) return a.name.localeCompare(b.name);
+        if (isNaN(aNum) && isNaN(bNum)) return compareAsciiInsensitive(a.name, b.name);
         if (isNaN(aNum)) return -1;
         if (isNaN(bNum)) return 1;
         return aNum - bNum;

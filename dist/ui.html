@@ -4851,12 +4851,6 @@
         </span>
         <span class="main-tab-label">Rules</span>
       </button>
-      <button type="button" class="main-tab" role="tab" aria-selected="false" data-tab="scanner" onclick="setMainTab('scanner')">
-        <span class="main-tab-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
-        </span>
-        <span class="main-tab-label">Scanner</span>
-      </button>
     </div>
 
     <!-- ================================================================ -->
@@ -5084,6 +5078,7 @@
             <div class="fnd-seg-bar" role="tablist" style="margin-top:14px">
               <button class="fnd-seg-btn active" data-seg="maturity" onclick="setCompSeg('maturity')" role="tab">Maturity</button>
               <button class="fnd-seg-btn" data-seg="libraries" onclick="setCompSeg('libraries')" role="tab">Libraries JSON</button>
+              <button class="fnd-seg-btn" data-seg="taxonomy" onclick="setCompSeg('taxonomy')" role="tab">Taxonomy</button>
             </div>
 
             <div id="comp-pane-maturity" style="padding:0;margin-top:14px">
@@ -5173,6 +5168,23 @@
               </div>
 
             </div><!-- /#comp-pane-libraries -->
+
+            <div id="comp-pane-taxonomy" style="display:none;padding:0;margin-top:14px">
+              <div class="scanner-panel" style="padding:0">
+                <div class="scanner-input">
+                  <label for="scanner-prefix-input">Component prefix</label>
+                  <input id="scanner-prefix-input" type="text" placeholder="e.g. RADD, GFM, NBG" />
+                  <label class="scanner-checkbox-label">
+                    <input id="scanner-include-internal" type="checkbox" />
+                    Include sub-components (dot-prefix)
+                  </label>
+                  <button id="scanner-scan-btn" type="button" onclick="runComponentTaxonomyScan()">Scan File</button>
+                  <div id="scanner-progress" class="scanner-progress hidden"></div>
+                  <div id="scanner-error" class="scanner-error hidden"></div>
+                </div>
+                <div id="scanner-results" class="scanner-results hidden"></div>
+              </div>
+            </div><!-- /#comp-pane-taxonomy -->
 
           </div><!-- /#comp-area-main -->
         </div>
@@ -5321,23 +5333,6 @@
     <!-- ================================================================ -->
     <!-- SCANNER TAB — prefix-based component taxonomy                     -->
     <!-- ================================================================ -->
-    <div id="tab-pane-scanner" class="tab-pane hidden">
-      <div class="scanner-panel">
-        <div class="scanner-input">
-          <label for="scanner-prefix-input">Component prefix</label>
-          <input id="scanner-prefix-input" type="text" placeholder="e.g. RADD, GFM, NBG" />
-          <label class="scanner-checkbox-label">
-            <input id="scanner-include-internal" type="checkbox" />
-            Include sub-components (dot-prefix)
-          </label>
-          <button id="scanner-scan-btn" type="button" onclick="runComponentTaxonomyScan()">Scan File</button>
-          <div id="scanner-progress" class="scanner-progress hidden"></div>
-          <div id="scanner-error" class="scanner-error hidden"></div>
-        </div>
-        <div id="scanner-results" class="scanner-results hidden"></div>
-      </div>
-    </div><!-- /#tab-pane-scanner -->
-
     <!-- Hidden radio buttons — set programmatically by runFoundationsScan / runComponentsScan -->
     <div style="display:none">
       <input type="radio" name="scan-type" value="components" id="scan-type-components">
@@ -5511,7 +5506,7 @@
   </div>
 
   <footer class="version-footer" style="display:flex;align-items:center;justify-content:space-between;text-align:left">
-    <span>v21.04.26.15</span>
+    <span>v21.04.26.32</span>
     <span id="mcp-status-bar" onclick="tryConnectMCPFromBar()" title="Bridge status · Click to connect/retry MCP" style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none">
       <span style="display:flex;align-items:center;gap:3px">
         <span id="bridge-status-dot" style="width:6px;height:6px;border-radius:50%;background:var(--app-border);flex-shrink:0;transition:background 0.3s"></span>
@@ -9527,8 +9522,6 @@
       document.getElementById('tab-pane-foundations').classList.toggle('hidden', tab !== 'foundations');
       document.getElementById('tab-pane-components').classList.toggle('hidden', tab !== 'components');
       document.getElementById('tab-pane-context-rules').classList.toggle('hidden', tab !== 'context-rules');
-      var scannerPane = document.getElementById('tab-pane-scanner');
-      if (scannerPane) scannerPane.classList.toggle('hidden', tab !== 'scanner');
       if (tab === 'foundations') jexInit();
       if (tab === 'components') { clRefreshSavedScans(); parent.postMessage({ pluginMessage: { type: 'CL_RESTORE_OPTIONS' } }, '*'); }
     }
@@ -9902,8 +9895,10 @@
       });
       var mPane = document.getElementById('comp-pane-maturity');
       var lPane = document.getElementById('comp-pane-libraries');
+      var tPane = document.getElementById('comp-pane-taxonomy');
       if (mPane) mPane.style.display = seg === 'maturity' ? '' : 'none';
       if (lPane) lPane.style.display = seg === 'libraries' ? '' : 'none';
+      if (tPane) tPane.style.display = seg === 'taxonomy' ? '' : 'none';
       if (seg === 'libraries') clRefreshSavedScans();
     }
 

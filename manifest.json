@@ -9,6 +9,11 @@
   "networkAccess": {
     "allowedDomains": [
       "https://api.github.com",
+      "https://raw.githubusercontent.com",
+      "https://api.notion.com",
+      "https://api.anthropic.com",
+      "https://api.openai.com",
+      "https://generativelanguage.googleapis.com",
       "http://localhost",
       "ws://localhost",
       "ws://localhost:9223",
@@ -22,9 +27,14 @@
       "ws://localhost:9231",
       "ws://localhost:9232"
     ],
-    "reasoning": "Connects to local MCP server via WebSocket for AI-assisted design system analysis. Supports port range 9223-9232 for multi-instance operation.",
+    "reasoning": "MCP bridge on localhost; optional AI, GitHub, rubric (raw.githubusercontent.com), Notion.",
     "devAllowedDomains": [
       "https://api.github.com",
+      "https://raw.githubusercontent.com",
+      "https://api.notion.com",
+      "https://api.anthropic.com",
+      "https://api.openai.com",
+      "https://generativelanguage.googleapis.com",
       "http://localhost",
       "ws://localhost",
       "ws://localhost:9223",

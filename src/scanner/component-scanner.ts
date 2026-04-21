@@ -8,6 +8,8 @@
  * rather than being force-fit.
  */
 
+import { compareAsciiInsensitive } from '../string-compare';
+
 export type ComponentCategory =
   | 'actions'
   | 'form_inputs'
@@ -293,7 +295,7 @@ export async function scanComponents(
   const byCategory = emptyGroups();
   for (const entry of allEntries) byCategory[entry.category].push(entry);
   (Object.keys(byCategory) as ComponentCategory[]).forEach((cat) => {
-    byCategory[cat].sort((a, b) => a.displayName.localeCompare(b.displayName));
+    byCategory[cat].sort((a, b) => compareAsciiInsensitive(a.displayName, b.displayName));
   });
 
   const publicCount = allEntries.filter((e) => !e.isInternal).length;

@@ -18,6 +18,8 @@
  * UI code must never import this file — message-pass to the plugin worker.
  */
 
+import { compareAsciiInsensitive } from './string-compare';
+
 // ============================================================================
 // Re-exported subsystems
 // ============================================================================
@@ -275,7 +277,7 @@ export const tokenExport = {
     };
     const idx = meta.findIndex((m) => m.name === name);
     if (idx >= 0) meta[idx] = entry; else meta.push(entry);
-    meta.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+    meta.sort((a, b) => compareAsciiInsensitive(b.timestamp || '', a.timestamp || ''));
     await figma.clientStorage.setAsync(CL_META_KEY, JSON.stringify(meta));
   },
 

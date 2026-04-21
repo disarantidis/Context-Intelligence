@@ -3,6 +3,8 @@
  * Text style names use folder segments (e.g. …/.breakpoint/…/typography/…/Style).
  */
 
+import { compareAsciiInsensitive } from './string-compare';
+
 export interface WizardTextStyleSnapshot {
   id: string;
   name: string;
@@ -297,7 +299,7 @@ function sortTokensWithinStyleGroup(tokens: TypographyTokenOption[]): void {
     if (aPx != null && bPx != null) return aPx - bPx;
     if (aPx != null) return -1;
     if (bPx != null) return 1;
-    return a.name.localeCompare(b.name);
+    return compareAsciiInsensitive(a.name, b.name);
   });
 }
 
@@ -464,14 +466,14 @@ async function buildDropdownChoicesForVariable(
             name: o.name || '',
             resolvedValueDisplay: displays[i],
           }));
-          choices.sort((a, b) => a.name.localeCompare(b.name));
+          choices.sort((a, b) => compareAsciiInsensitive(a.name, b.name));
           if (!choices.some(c => c.id === hopId)) {
             choices.push({
               id: hop.id,
               name: hop.name || '',
               resolvedValueDisplay: await resolveVariableValueDisplay(hop, modeFor(hop)),
             });
-            choices.sort((a, b) => a.name.localeCompare(b.name));
+            choices.sort((a, b) => compareAsciiInsensitive(a.name, b.name));
           }
           return { choices, selectedId: hopId };
         }
@@ -499,7 +501,7 @@ async function buildDropdownChoicesForVariable(
             leafSemanticKey(o.name || '') === 'lineHeight',
         );
         if (opts.length > 0) {
-          opts.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+          opts.sort((a, b) => compareAsciiInsensitive(a.name || '', b.name || ''));
           const displays = await Promise.all(opts.map(o => resolveVariableValueDisplay(o, modeFor(o))));
           const coreChoices: TypographyTokenDropdownChoice[] = opts.map((o, i) => ({
             id: o.id,
@@ -561,7 +563,7 @@ async function buildDropdownChoicesForVariable(
         name: o.name || '',
         resolvedValueDisplay: displays[i],
       }));
-      choices.sort((a, b) => a.name.localeCompare(b.name));
+      choices.sort((a, b) => compareAsciiInsensitive(a.name, b.name));
       return { choices, selectedId: v.id };
     }
   }
@@ -636,7 +638,7 @@ export async function getBreakpointTypographyTokenOptions(): Promise<TypographyT
       dropdownSelectedId: dm.selectedId,
     };
   });
-  out.sort((a, b) => a.name.localeCompare(b.name));
+  out.sort((a, b) => compareAsciiInsensitive(a.name, b.name));
   return out;
 }
 
